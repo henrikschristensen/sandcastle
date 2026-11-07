@@ -1,0 +1,10 @@
+{
+  "session_id": "962f53da-75fc-63be-2437-7758f813def0",
+  "start_time": "2026-11-07T11:00:57.331000+00:00",
+  "end_time": "2026-11-07T11:01:31.451000+00:00",
+  "environment": {
+    "working_directory": "/tmp/vibe-roundtrip/work"
+  },
+  "parent_session_id": null,
+  "child_sessions": []
+}

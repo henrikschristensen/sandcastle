@@ -1,0 +1,2 @@
+Couldn't load your connectors: Failed to load connectors (HTTP 401). Their tools are unavailable in this session.
+Error: Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again.
