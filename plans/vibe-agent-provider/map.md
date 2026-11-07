@@ -27,12 +27,13 @@ A fully decided implementation spec for supporting the **Mistral Vibe CLI** as a
 - [Installing mistral-vibe in the sandbox image: uv vs pip, headless viability, VIBE_HOME](tickets/04-vibe-docker-install.md) — Install via **uv** (`curl -LsSf https://astral.sh/uv/…/install.sh | sh && uv tool install mistral-vibe` as the `agent` user; PyPI needs Python ≥ 3.12 but bookworm's apt python is 3.11, and no npm package exists). Headless `vibe -p` verified with no TTY/TERM/git; `MISTRAL_API_KEY` in the env alone suffices; `VIBE_HOME` is env-overridable. Findings: `research/vibe-docker-install.md`.
 - [Empirical check: vibe -p session-id round-trip, captured stream, exit codes](tickets/05-vibe-roundtrip-empirical.md) — **Round-trip verified on 3.0.4**: streamed `sessionId` == unified dir == `meta.json.session_id`; `--resume` takes the full UUID or its first 8 chars, continues in place, and re-roots into the recorded `working_directory` (same absolute path required). Exit codes: 0 ok, 1 usage/config incl. bad key/unknown model (stderr only), 2 infra, 3 limits, 4 abort. **No `-p`-mode fork** → `canFork: false`. `--output-dir DIR` exports `export.json` (session_id, usage, cost, outcome) + a full session-dir copy on every exit — the capture hook; usage/context-window are not on stdout. Samples: `research/vibe-roundtrip/`.
 
+- [The vibe print command: exact invocation, prompt delivery, flags, env defaults](tickets/06-vibe-print-command.md) — Locked via grilling: `vibe -p --output streaming --model '<model>' [--auto-approve] [--resume '<id>']` with the **prompt on stdin** (`{ command, stdin }`); `--auto-approve` iff `dangerouslySkipPermissions`; resume appends `--resume <id>`, fork throws `ForkNotSupportedError`; provider env = `VIBE_ENABLE_TELEMETRY=false` + `VIBE_ENABLE_UPDATE_CHECKS=false`; no `--output-dir`; `VibeOptions` minimal (`env`, `captureSessions`, `sessionStorage` dirs).
+
 ## Not yet specified
 
 <!-- in-scope fog; graduates as the frontier advances -->
 
-- `buildInteractiveArgs` form for the vibe TUI (graduates once the print command is decided).
-- Whether `VibeOptions` should expose `--max-turns` / `--max-price` / thinking-level knobs (graduates with the print-command ticket).
+- `buildInteractiveArgs` form for the vibe TUI (ticket 06 sketched `["vibe", "--model", model]` + optional positional prompt; refine at implementation).
 - How the sandboxed vibe receives issue-tracker tools — the `{{ISSUE_TRACKER_TOOLS}}` Dockerfile placeholder mechanics (graduates with the init-scaffold ticket).
 - Whether session capture must include child/subagent session dirs (answered structurally by ticket 03: sibling `child-<hex>` dirs; the capture-scope decision belongs to ticket 09).
 
