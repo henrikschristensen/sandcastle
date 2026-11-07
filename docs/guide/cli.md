@@ -13,7 +13,7 @@ See [Init](./init.md) for what [init](./glossary.md#init) asks, checks and write
 | `--model`                 | No       | Agent's default model        | Model to use (e.g. `claude-sonnet-4-6`). Defaults to agent's default                                                   |
 | `--sandbox`               | No       | Asked interactively          | [Sandbox provider](./glossary.md#sandbox-provider) to use (`bwrap`, `seatbelt`, `docker`, `podman`)                    |
 | `--template`              | No       | Asked interactively          | Template to scaffold (e.g. `blank`, `simple-loop`)                                                                     |
-| `--issue-tracker`         | No       | Asked interactively          | [Issue tracker](./glossary.md#issue-tracker) to use (`github-issues`, `beads`, `custom`)                               |
+| `--issue-tracker`         | No       | Asked interactively          | [Issue tracker](./glossary.md#issue-tracker) to use (`github-issues`, `beads`, `gitea`, `custom`)                      |
 | `--create-label`          | No       | Asked interactively          | `true` / `false` — whether to create the `Sandcastle` GitHub label (only with `--issue-tracker github-issues`)         |
 | `--build-image`           | No       | Asked interactively          | `true` / `false` — whether to build the sandbox image now (ignored with `--issue-tracker custom` or a native provider) |
 | `--install-template-deps` | No       | Asked interactively          | `true` / `false` — whether to install template [host](./glossary.md#host) deps (e.g. `zod` for the planner templates)  |

@@ -721,6 +721,34 @@ export const beadsVersionWarning = (
   return `Your host runs bd ${hostVersion}, but ${shared}, and an older bd can't safely write a database a newer one has migrated. Set ARG BEADS_VERSION in the Dockerfile to ${hostVersion} and rebuild the image, or use bd ${BEADS_VERSION} on the host.`;
 };
 
+// The tea (Gitea CLI) release baked into the sandbox image. 0.16.0 is the
+// release this scaffold was verified with. The binary is statically linked
+// (CGO_ENABLED=0), so the image needs no runtime packages beyond the download
+// tools.
+const TEA_VERSION = "0.16.0";
+
+// tea authenticates from the GITEA_INSTANCE_URL/GITEA_TOKEN env vars (an
+// in-memory login with the version check off) and resolves the repo from the
+// sandbox's git remote, so — unlike bd — it keeps no shared host state and
+// needs no host-vs-image version warning.
+const TEA_TOOLS = `# Install the Gitea CLI (tea) — pinned, checksum-verified static binary
+ARG TEA_VERSION=${TEA_VERSION}
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+  ca-certificates \\
+  curl \\
+  xz-utils \\
+  && rm -rf /var/lib/apt/lists/* \\
+  && ARCH=$(dpkg --print-architecture) \\
+  && TEA_ASSET="tea-\${TEA_VERSION}-linux-\${ARCH}.xz" \\
+  && TEA_URL="https://gitea.com/gitea/tea/releases/download/v\${TEA_VERSION}" \\
+  && cd /tmp \\
+  && curl -fsSLO "\${TEA_URL}/\${TEA_ASSET}" \\
+  && curl -fsSL "\${TEA_URL}/checksums.txt" | grep " \${TEA_ASSET}$" | sha256sum -c - \\
+  && xz -dk "\${TEA_ASSET}" \\
+  && install -m 0755 "\${TEA_ASSET%.xz}" /usr/local/bin/tea \\
+  && rm "\${TEA_ASSET}" "\${TEA_ASSET%.xz}" \\
+  && tea --version`;
+
 // Sentinels baked into the scaffold for the `custom` issue tracker. The
 // project ships deliberately broken-until-configured; the setup agent finds
 // and replaces these markers in place (see SETUP_ISSUE_TRACKER.md). Defined as
@@ -766,6 +794,24 @@ GH_HOST=
     envExample: "",
     sandboxOptions: BEADS_SANDBOX_OPTIONS,
     nativeSandboxOptions: BEADS_NATIVE_SANDBOX_OPTIONS,
+  },
+  {
+    name: "gitea",
+    label: "Gitea (Codeberg or self-hosted)",
+    templateArgs: {
+      // Bare commands: tea resolves the repo from the sandbox's git remote
+      // (override with `-r owner/repo`) and authenticates from the
+      // GITEA_INSTANCE_URL/GITEA_TOKEN env vars. `<ID>` is the issue index.
+      LIST_TASKS_COMMAND:
+        "tea issues list --state open --labels Sandcastle --limit 100 --fields index,title,state,labels,body,url -o json",
+      VIEW_TASK_COMMAND: "tea issues <ID> --comments -o json",
+      CLOSE_TASK_COMMAND: `tea comments add <ID> "Completed by Sandcastle" && tea issues close <ID>`,
+      ISSUE_TRACKER_TOOLS: TEA_TOOLS,
+    },
+    envExample: `# Gitea/Forgejo instance + API token — the agent uses them to read and manage issues
+# Default is Codeberg. Create a token: profile → Settings → Applications → New access token (scopes: read:issue + write:issue)
+GITEA_INSTANCE_URL=https://codeberg.org
+GITEA_TOKEN=`,
   },
   {
     name: "custom",
@@ -926,6 +972,22 @@ const envNotes = (
   sandboxProvider.image === undefined
     ? [
         `   ${sandboxProvider.name}() hides your host's \`gh\` login from the agent, so put a GH_TOKEN in .sandcastle/.env for \`gh\` to use.`,
+      ]
+    : []),
+  // Gitea needs a Sandcastle label on the repo (tea silently drops unknown
+  // labels, so without it the list command returns every open issue) and a
+  // git remote pointing at GITEA_INSTANCE_URL, which is how tea resolves the
+  // repo. A native sandbox hides the host's tea login too, so the token comes
+  // from the env Sandcastle passes in.
+  ...(issueTracker.name === "gitea"
+    ? [
+        "   Create a `Sandcastle` label on your Gitea repo (web UI or `tea labels create`) — without it the list command returns every open issue.",
+        "   Your repo's git remote must point at `GITEA_INSTANCE_URL` (default https://codeberg.org), or tea can't resolve the repo.",
+        ...(sandboxProvider.image === undefined
+          ? [
+              `   ${sandboxProvider.name}() hides your host's \`tea\` login from the agent, so put a GITEA_TOKEN in .sandcastle/.env for \`tea\` to use (plus GITEA_INSTANCE_URL if your instance isn't codeberg.org).`,
+            ]
+          : []),
       ]
     : []),
 ];

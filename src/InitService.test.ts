@@ -1504,8 +1504,84 @@ describe("InitService scaffold", () => {
       expect(managers.some((m) => m.name === "custom")).toBe(true);
     });
 
+    it("listIssueTrackers places gitea between beads and custom, with github-issues first (the default)", () => {
+      const names = listIssueTrackers().map((m) => m.name);
+      expect(names).toEqual(["github-issues", "beads", "gitea", "custom"]);
+      const first = listIssueTrackers()[0];
+      assert(first !== undefined, "registry is a non-empty tuple");
+      expect(first.name).toBe("github-issues");
+    });
+
+    it("getIssueTracker returns gitea entry with the locked tea templateArgs and envExample", () => {
+      const gitea = requireIssueTracker("gitea");
+      expect(gitea.label).toBe("Gitea (Codeberg or self-hosted)");
+      expect(gitea.templateArgs.LIST_TASKS_COMMAND).toBe(
+        "tea issues list --state open --labels Sandcastle --limit 100 --fields index,title,state,labels,body,url -o json",
+      );
+      expect(gitea.templateArgs.VIEW_TASK_COMMAND).toBe(
+        "tea issues <ID> --comments -o json",
+      );
+      expect(gitea.templateArgs.CLOSE_TASK_COMMAND).toBe(
+        'tea comments add <ID> "Completed by Sandcastle" && tea issues close <ID>',
+      );
+      const tools = gitea.templateArgs.ISSUE_TRACKER_TOOLS;
+      expect(tools).toContain("ARG TEA_VERSION=0.16.0");
+      expect(tools).toContain(
+        "https://gitea.com/gitea/tea/releases/download/v${TEA_VERSION}",
+      );
+      expect(tools).toContain("checksums.txt");
+      expect(tools).toContain("sha256sum -c -");
+      expect(tools).toContain("/usr/local/bin/tea");
+      expect(tools).toContain("tea --version");
+      expect(gitea.envExample).toContain(
+        "GITEA_INSTANCE_URL=https://codeberg.org",
+      );
+      expect(gitea.envExample).toContain("GITEA_TOKEN=");
+      // Gitea is a remote API — no host state to mount, unlike beads.
+      expect(gitea.sandboxOptions).toBeUndefined();
+      expect(gitea.nativeSandboxOptions).toBeUndefined();
+    });
+
     it("getIssueTracker returns undefined for unknown manager", () => {
       expect(getIssueTracker("nonexistent")).toBeUndefined();
+    });
+  });
+
+  describe("gitea next steps", () => {
+    const gitea = requireIssueTracker("gitea");
+    const docker = requireSandboxProvider("docker");
+    const bwrap = requireSandboxProvider("bwrap");
+
+    it("include the Sandcastle-label and git-remote notes on an image provider", () => {
+      const joined = getNextStepsLines(
+        "simple-loop",
+        "main.mts",
+        gitea,
+        claudeCodeAgent,
+        "npm",
+        [],
+        docker,
+      ).join("\n");
+      expect(joined).toContain("`Sandcastle` label");
+      expect(joined).toContain(
+        "git remote must point at `GITEA_INSTANCE_URL` (default https://codeberg.org)",
+      );
+      // No native-sandbox env note when the provider has an image.
+      expect(joined).not.toContain("hides your host's `tea` login");
+    });
+
+    it("add the hidden-host-tea-login env note on a native provider", () => {
+      const joined = getNextStepsLines(
+        "simple-loop",
+        "main.mts",
+        gitea,
+        claudeCodeAgent,
+        "npm",
+        [],
+        bwrap,
+      ).join("\n");
+      expect(joined).toContain("bwrap() hides your host's `tea` login");
+      expect(joined).toContain("GITEA_TOKEN in .sandcastle/.env");
     });
   });
 
@@ -1622,6 +1698,94 @@ describe("InitService scaffold", () => {
       );
       expect(prompt).not.toContain("--label Sandcastle");
       expect(prompt).toContain("gh issue list");
+    });
+
+    it("simple-loop with gitea produces prompt with tea commands", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        issueTracker: getIssueTracker("gitea"),
+      });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "prompt.md"),
+        "utf8",
+      );
+      expect(prompt).toContain(
+        "tea issues list --state open --labels Sandcastle --limit 100 --fields index,title,state,labels,body,url -o json",
+      );
+      expect(prompt).toContain(
+        'tea comments add <ID> "Completed by Sandcastle" && tea issues close <ID>',
+      );
+      expect(prompt).not.toContain("gh issue list");
+      expect(prompt).not.toContain("gh issue close");
+      expect(prompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+      expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
+    });
+
+    it("parallel-planner with gitea produces implement-prompt with the tea view command", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "parallel-planner",
+        issueTracker: getIssueTracker("gitea"),
+      });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "implement-prompt.md"),
+        "utf8",
+      );
+      expect(prompt).toContain("tea issues <ID> --comments -o json");
+      expect(prompt).not.toContain("{{VIEW_TASK_COMMAND}}");
+    });
+
+    it("gitea keeps --labels Sandcastle when createLabel is false (the strip is gh-specific)", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        issueTracker: getIssueTracker("gitea"),
+        createLabel: false,
+      });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "prompt.md"),
+        "utf8",
+      );
+      expect(prompt).toContain("--labels Sandcastle");
+    });
+
+    it("gitea .env.example includes GITEA_INSTANCE_URL and GITEA_TOKEN", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        issueTracker: getIssueTracker("gitea"),
+      });
+
+      const envExample = await readFile(
+        join(dir, ".sandcastle", ".env.example"),
+        "utf8",
+      );
+      expect(envExample).toContain("GITEA_INSTANCE_URL=https://codeberg.org");
+      expect(envExample).toContain("GITEA_TOKEN=");
+      expect(envExample).not.toContain("GH_TOKEN");
+    });
+
+    it("gitea Dockerfile gets the pinned TEA_TOOLS install block", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        issueTracker: getIssueTracker("gitea"),
+      });
+
+      const dockerfile = await readFile(
+        join(dir, ".sandcastle", "Dockerfile"),
+        "utf8",
+      );
+      expect(dockerfile).toContain("Install the Gitea CLI (tea)");
+      expect(dockerfile).toContain("ARG TEA_VERSION=0.16.0");
+      expect(dockerfile).toContain("sha256sum -c -");
+      expect(dockerfile).toContain("/usr/local/bin/tea");
+      expect(dockerfile).not.toContain("{{ISSUE_TRACKER_TOOLS}}");
+      expect(dockerfile).not.toContain("Install GitHub CLI");
     });
 
     it("scaffold without issueTracker defaults to github-issues", async () => {

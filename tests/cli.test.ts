@@ -243,7 +243,7 @@ describe("sandcastle init: an unknown choice lists the valid ones", () => {
     },
     {
       flags: { "issue-tracker": "nonexistent" },
-      lists: ["github-issues", "beads", "custom"],
+      lists: ["github-issues", "beads", "gitea", "custom"],
     },
   ])("$flags", async ({ flags, lists }) => {
     const result = await sandcastle(initArgs(flags), hostRepo());
@@ -267,6 +267,31 @@ describe("sandcastle init without a TTY", () => {
     expect(readdirSync(path.join(repo, ".sandcastle"))).toStrictEqual(
       expect.arrayContaining(["Dockerfile", "prompt.md"]),
     );
+  });
+
+  it("scaffolds .sandcastle/ with --issue-tracker gitea (no --create-label needed)", async () => {
+    const repo = hostRepo();
+
+    const result = await sandcastle(
+      initArgs({ ...INIT_FLAGS, "issue-tracker": "gitea" }),
+      repo,
+    );
+
+    expect(result).toMatchObject({ exitCode: 0 });
+    expect(result.output).toContain("Init complete");
+    const envExample = await readFile(
+      path.join(repo, ".sandcastle", ".env.example"),
+      "utf8",
+    );
+    expect(envExample).toContain("GITEA_INSTANCE_URL=https://codeberg.org");
+    expect(envExample).toContain("GITEA_TOKEN=");
+    const dockerfile = await readFile(
+      path.join(repo, ".sandcastle", "Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toContain("Install the Gitea CLI (tea)");
+    expect(dockerfile).toContain("ARG TEA_VERSION=0.16.0");
+    expect(dockerfile).not.toContain("{{ISSUE_TRACKER_TOOLS}}");
   });
 
   it("fails fast, naming --agent, when it is missing", async () => {

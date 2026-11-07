@@ -110,7 +110,7 @@ A [sandbox provider](#sandbox-provider) whose [sandbox](#sandbox) has its own fi
 
 ## Issue tracker
 
-Where the agent finds its [tasks](#task), chosen during [init](#init): GitHub Issues or Beads, for example. See [Init](./init.md).
+Where the agent finds its [tasks](#task), chosen during [init](#init): GitHub Issues, Gitea, or Beads, for example. See [Init](./init.md).
 
 First explained in [Init](./init.md).
 
