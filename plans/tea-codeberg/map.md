@@ -36,12 +36,15 @@ A fully decided, plan-only implementation spec for adding **Gitea issues** — C
 - [Decide: TEA_TOOLS Dockerfile snippet and tea version pinning policy](tickets/06-tea-tools-dockerfile-pin.md) — Locked: pin `TEA_VERSION = "0.16.0"` const + overridable `ARG TEA_VERSION` (beads pattern); `TEA_TOOLS` is the research §5 block verbatim — single RUN, `tea-…-linux-${ARCH}.xz` from gitea.com releases, `checksums.txt` grep + `sha256sum -c`, install to `/usr/local/bin/tea`, `tea --version` sanity; static binary so no runtime deps; **no drift warning** (tea keeps no shared local state, unlike bd).
 - [Decide: registry wiring — entry literal, placement, picker/flag, init special-casing](tickets/07-registry-wiring.md) — Locked: entry `name: "gitea"`, `label: "Gitea (Codeberg or self-hosted)"`, between `beads` and `custom`, no sandboxOptions; flag/picker automatic via `listIssueTrackers()`; `--create-label` stays github-only (gitea label via next-steps/docs, 08); `envNotes` native-provider line extended to gitea; next-steps gain "create the Sandcastle label" + "remote must point at GITEA_INSTANCE_URL".
 - [Decide: tests, docs/guide updates, and changeset for the gitea entry](tickets/08-tests-docs-changeset.md) — Locked: test set (registry order/default, `getIssueTracker("gitea")` templateArgs/envExample, .env.example lines, prompt + Dockerfile substitution, `--issue-tracker gitea` flag, envNotes line); docs = init.md picker sentence + short Gitea paragraph, cli.md `--issue-tracker` row, glossary.md example; changeset `.changeset/gitea-issue-tracker.md` **minor** for `@ai-hero/sandcastle`. SETUP_ISSUE_TRACKER.md, docs/agents, README untouched.
+- [Task: empirical end-to-end verification of the locked tea commands against a real Gitea instance](tickets/09-empirical-verification.md) — Done AFK against a local **Forgejo 17.0.1** (Codeberg's software): the three locked commands ran verbatim, exit 0, env-only auth, git-remote auto-detection; label filter, JSON shapes, comments-in-view, comment-then-close all confirmed; failure exits 1 (bad token / missing issue / no repo context for view+close). Findings: `research/tea-empirical-verification.md`.
+
+**Map complete** — all 9 tickets closed; nothing left to decide before implementation. Hand off.
 
 ## Not yet specified
 
 <!-- in-scope fog; graduates as the frontier advances -->
 
-- Empirical end-to-end run of the locked commands and env vars against a real Codeberg repo needs a token/test repo the user provisions (09).
+_(none — the empirical verification graduated and resolved in 09; no fog remains)_
 
 ## Out of scope
 
