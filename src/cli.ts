@@ -197,7 +197,7 @@ const sandboxOption = Options.text("sandbox").pipe(
 
 const issueTrackerOption = Options.text("issue-tracker").pipe(
   Options.withDescription(
-    "Issue tracker to use (e.g. github-issues, beads, custom)",
+    "Issue tracker to use (e.g. github-issues, beads, gitea, custom)",
   ),
   Options.optional,
 );

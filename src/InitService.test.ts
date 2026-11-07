@@ -1507,7 +1507,7 @@ describe("InitService scaffold", () => {
     it("listIssueTrackers places gitea between beads and custom, with github-issues first (the default)", () => {
       const names = listIssueTrackers().map((m) => m.name);
       expect(names).toEqual(["github-issues", "beads", "gitea", "custom"]);
-      const first = listIssueTrackers()[0];
+      const [first] = listIssueTrackers();
       assert(first !== undefined, "registry is a non-empty tuple");
       expect(first.name).toBe("github-issues");
     });
@@ -1527,7 +1527,7 @@ describe("InitService scaffold", () => {
       const tools = gitea.templateArgs.ISSUE_TRACKER_TOOLS;
       expect(tools).toContain("ARG TEA_VERSION=0.16.0");
       expect(tools).toContain(
-        "https://gitea.com/gitea/tea/releases/download/v${TEA_VERSION}",
+        `https://gitea.com/gitea/tea/releases/download/v\${TEA_VERSION}`,
       );
       expect(tools).toContain("checksums.txt");
       expect(tools).toContain("sha256sum -c -");
