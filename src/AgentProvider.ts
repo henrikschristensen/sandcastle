@@ -2081,6 +2081,13 @@ const captureVibeDir = async ({
   toCwd: string;
   tag: string;
 }): Promise<boolean> => {
+  // Native sandboxes run the agent in a user namespace, so files it writes
+  // with restrictive modes (vibe's plugin manifests are 0600) are unreadable
+  // to the host process doing the copy. Make the tree world-readable first;
+  // best-effort, the copy below reports the real failure if this didn't help.
+  await handle
+    .exec(`chmod -R a+rX ${JSON.stringify(sourceDir)} 2>/dev/null || true`)
+    .catch(() => undefined);
   const result = await handle.exec(`find ${JSON.stringify(sourceDir)} -type f`);
   const stdout = result.stdout.trim();
   if (result.exitCode !== 0 || stdout === "") {
@@ -2184,16 +2191,25 @@ const makeVibeSessionStorage = (options?: VibeOptions): AgentSessionStorage => {
       if (!found) {
         throw new Error(`vibe session ${sessionId} not found in ${sandboxDir}`);
       }
-      // The shared plugin package tree, when the sandbox has one (best-effort:
-      // older vibe versions do not create it, and resume works without it).
-      await captureVibeDir({
-        handle,
-        sourceDir: vibePluginsDirOf(sandboxRoot, false),
-        destDir: vibePluginsDirOf(hostRoot, true),
-        fromCwd: sandboxCwd,
-        toCwd: hostCwd,
-        tag: "vibe-plugins",
-      });
+      // The shared plugin package tree, when the sandbox has one. Best-effort
+      // like Claude's subagent transcripts: older vibe versions do not create
+      // it, and a partial copy must not fail the (already successful) run.
+      try {
+        await captureVibeDir({
+          handle,
+          sourceDir: vibePluginsDirOf(sandboxRoot, false),
+          destDir: vibePluginsDirOf(hostRoot, true),
+          fromCwd: sandboxCwd,
+          toCwd: hostCwd,
+          tag: "vibe-plugins",
+        });
+      } catch (error) {
+        console.error(
+          `sandcastle: failed to capture the vibe plugins tree: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     },
     resumeIntoSandbox: async ({ hostCwd, sandboxCwd, sessionId, handle }) => {
       const found = await findVibeSessionOnHost(sessionId, hostRoot);

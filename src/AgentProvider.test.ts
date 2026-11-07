@@ -4410,3 +4410,89 @@ describe("vibe sessionStorage plugin tree", () => {
     }
   });
 });
+
+describe("vibe captureToHost plugins best-effort", () => {
+  it("a failing plugins-tree copy logs a warning and does not fail the session capture", async () => {
+    const fsHandle = (): BindMountSandboxHandle => ({
+      worktreePath: "/workspace",
+      exec: async (command, options) => {
+        const { exec } = await import("node:child_process");
+        return new Promise((resolve) => {
+          const child = exec(command, (err, stdout, stderr) => {
+            resolve({
+              stdout: stdout.toString(),
+              stderr: stderr.toString(),
+              exitCode: err && typeof err.code === "number" ? err.code : 0,
+            });
+          });
+          child.stdin?.end(options?.stdin);
+        });
+      },
+      copyFileIn: async (hostPath, sandboxPath) => {
+        const { copyFile } = await import("node:fs/promises");
+        await copyFile(hostPath, sandboxPath);
+      },
+      copyFileOut: async (sandboxPath, hostPath) => {
+        if (sandboxPath.includes("/plugins/")) {
+          throw new Error("simulated EACCES on a 0600 plugin manifest");
+        }
+        const { copyFile } = await import("node:fs/promises");
+        await copyFile(sandboxPath, hostPath);
+      },
+      close: async () => {},
+    });
+    const hostRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    const ID = "fed1d9fe-b689-ef5f-18ac-eeae7651cb56";
+    try {
+      const sessionDir = join(sandboxRoot, ID);
+      await mkdir(join(sessionDir, "journal"), { recursive: true });
+      await writeFile(
+        join(sessionDir, "meta.json"),
+        JSON.stringify({
+          session_id: ID,
+          environment: { working_directory: "/sandbox/repo" },
+        }),
+      );
+      await writeFile(
+        join(sessionDir, "journal", "0000000000000001.jsonl"),
+        "{}\n",
+      );
+      const pluginDir = join(dirname(sandboxRoot), "plugins", "manifests");
+      await mkdir(pluginDir, { recursive: true });
+      await writeFile(join(pluginDir, "m.json"), "{}");
+
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostRoot,
+          sandboxSessionsDir: sandboxRoot,
+        },
+      });
+      // Must not throw even though the plugins copy fails.
+      await sessionStorage.captureToHost({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: fsHandle(),
+      });
+      await expect(sessionStorage.existsOnHost("/host/repo", ID)).resolves.toBe(
+        true,
+      );
+      const meta = JSON.parse(
+        await readFile(join(hostRoot, ID, "meta.json"), "utf8"),
+      );
+      expect(meta.environment.working_directory).toBe("/host/repo");
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+      await rm(sandboxRoot, { recursive: true, force: true });
+      await rm(join(dirname(hostRoot), "plugins"), {
+        recursive: true,
+        force: true,
+      });
+      await rm(join(dirname(sandboxRoot), "plugins"), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+});
