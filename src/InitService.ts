@@ -461,13 +461,15 @@ RUN groupmod -o -g $AGENT_GID node && usermod -o -u $AGENT_UID -g $AGENT_GID -d 
 USER \${AGENT_UID}:\${AGENT_GID}
 
 # Install uv (Astral installer, version pinned like https://mistral.ai/vibe/install.sh),
-# then the Vibe CLI as a uv tool. uv ships a managed CPython >= 3.12, so the image's
-# python3.11 is irrelevant; mistral-vibe requires Python >= 3.12 (PyPI) and has no npm package.
+# then the Vibe CLI as a uv tool. mistral-vibe requires Python >= 3.12 (PyPI) and has no
+# npm package, and bookworm ships 3.11: --python 3.12 makes uv solve against a managed
+# GIL CPython 3.12, which the cp312-abi3 manylinux wheel matches. Without it uv first solves
+# against the system 3.11, picks the sdist, and tries to compile the Rust CLI (no cargo).
 # Latest-at-build-time, matching the other templates. The installer puts uv in
 # ~/.local/bin, which this layer's PATH does not include yet (ENV PATH applies to
 # later layers only), so call it by absolute path.
 RUN curl -LsSf https://astral.sh/uv/0.11.26/install.sh | sh \\
-  && /home/agent/.local/bin/uv tool install mistral-vibe
+  && /home/agent/.local/bin/uv tool install --python 3.12 mistral-vibe
 
 # uv and uv-installed tools (vibe, vibe-app-server) both live in ~/.local/bin
 ENV PATH="/home/agent/.local/bin:$PATH"
