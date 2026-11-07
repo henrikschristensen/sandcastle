@@ -4274,8 +4274,11 @@ describe("vibe sessionStorage plugin tree", () => {
   const ID = "fed1d9fe-b689-ef5f-18ac-eeae7651cb56";
 
   it("captureToHost also mirrors the sandbox plugins/ tree next to the host sessions root, and resumeIntoSandbox moves it back", async () => {
-    const hostRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
-    const sandboxRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    const base = await mkdtemp(join(tmpdir(), "sandcastle-vibe-plugins-"));
+    const hostRoot = join(base, "host", "root");
+    const sandboxRoot = join(base, "sbx", "root");
+    await mkdir(hostRoot, { recursive: true });
+    await mkdir(sandboxRoot, { recursive: true });
     try {
       // Sandbox: unified/<id>/ session + logs/session/plugins/ tree.
       const sessionDir = join(sandboxRoot, ID);
@@ -4326,7 +4329,8 @@ describe("vibe sessionStorage plugin tree", () => {
       expect(await readFile(hostPlugin, "utf8")).toBe("# vibe skill\n");
 
       // Resume into a fresh sandbox root: session + plugins both land.
-      const sandbox2 = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx2-"));
+      const sandbox2 = join(base, "sbx2", "root");
+      await mkdir(sandbox2, { recursive: true });
       try {
         const { sessionStorage: resumed } = vibe("m", {
           sessionStorage: {
@@ -4361,22 +4365,16 @@ describe("vibe sessionStorage plugin tree", () => {
         await rm(sandbox2, { recursive: true, force: true });
       }
     } finally {
-      await rm(hostRoot, { recursive: true, force: true });
-      await rm(sandboxRoot, { recursive: true, force: true });
-      await rm(join(dirname(hostRoot), "plugins"), {
-        recursive: true,
-        force: true,
-      });
-      await rm(join(dirname(sandboxRoot), "plugins"), {
-        recursive: true,
-        force: true,
-      });
+      await rm(base, { recursive: true, force: true });
     }
   });
 
   it("captureToHost tolerates a sandbox without a plugins/ tree", async () => {
-    const hostRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
-    const sandboxRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    const base = await mkdtemp(join(tmpdir(), "sandcastle-vibe-plugins-"));
+    const hostRoot = join(base, "host", "root");
+    const sandboxRoot = join(base, "sbx", "root");
+    await mkdir(hostRoot, { recursive: true });
+    await mkdir(sandboxRoot, { recursive: true });
     try {
       const sessionDir = join(sandboxRoot, ID);
       await mkdir(sessionDir, { recursive: true });
@@ -4397,16 +4395,7 @@ describe("vibe sessionStorage plugin tree", () => {
         true,
       );
     } finally {
-      await rm(hostRoot, { recursive: true, force: true });
-      await rm(sandboxRoot, { recursive: true, force: true });
-      await rm(join(dirname(hostRoot), "plugins"), {
-        recursive: true,
-        force: true,
-      });
-      await rm(join(dirname(sandboxRoot), "plugins"), {
-        recursive: true,
-        force: true,
-      });
+      await rm(base, { recursive: true, force: true });
     }
   });
 });
@@ -4493,6 +4482,86 @@ describe("vibe captureToHost plugins best-effort", () => {
         recursive: true,
         force: true,
       });
+    }
+  });
+});
+
+describe("vibe captureToHost read-only host store", () => {
+  it("overwrites dest files/dirs left read-only (0400/0500) by earlier host-side vibe runs", async () => {
+    const { chmod } = await import("node:fs/promises");
+    const fsHandle = (): BindMountSandboxHandle => ({
+      worktreePath: "/workspace",
+      exec: async (command, options) => {
+        const { exec } = await import("node:child_process");
+        return new Promise((resolve) => {
+          const child = exec(command, (err, stdout, stderr) => {
+            resolve({
+              stdout: stdout.toString(),
+              stderr: stderr.toString(),
+              exitCode: err && typeof err.code === "number" ? err.code : 0,
+            });
+          });
+          child.stdin?.end(options?.stdin);
+        });
+      },
+      copyFileIn: async (hostPath, sandboxPath) => {
+        const { copyFile } = await import("node:fs/promises");
+        await copyFile(hostPath, sandboxPath);
+      },
+      copyFileOut: async (sandboxPath, hostPath) => {
+        const { copyFile } = await import("node:fs/promises");
+        await copyFile(sandboxPath, hostPath);
+      },
+      close: async () => {},
+    });
+    const hostRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    const ID = "fed1d9fe-b689-ef5f-18ac-eeae7651cb56";
+    try {
+      // Pre-existing read-only host store entry, as the user's own host vibe runs leave it.
+      const existing = join(hostRoot, ID, "journal", "0000000000000001.jsonl");
+      await mkdir(dirname(existing), { recursive: true });
+      await writeFile(existing, "old\n");
+      await chmod(existing, 0o400);
+      await chmod(dirname(existing), 0o500);
+      await writeFile(join(hostRoot, ID, "meta.json"), "{}");
+      await chmod(join(hostRoot, ID, "meta.json"), 0o400);
+
+      const sessionDir = join(sandboxRoot, ID);
+      await mkdir(join(sessionDir, "journal"), { recursive: true });
+      await writeFile(
+        join(sessionDir, "meta.json"),
+        JSON.stringify({
+          session_id: ID,
+          environment: { working_directory: "/sandbox/repo" },
+        }),
+      );
+      await writeFile(
+        join(sessionDir, "journal", "0000000000000001.jsonl"),
+        '{"sequence":1}\n',
+      );
+
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostRoot,
+          sandboxSessionsDir: sandboxRoot,
+        },
+      });
+      await sessionStorage.captureToHost({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: fsHandle(),
+      });
+      // The read-only dest was replaced with the sandbox content.
+      expect(await readFile(existing, "utf8")).toBe('{"sequence":1}\n');
+      const meta = JSON.parse(
+        await readFile(join(hostRoot, ID, "meta.json"), "utf8"),
+      );
+      expect(meta.environment.working_directory).toBe("/host/repo");
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+      await rm(sandboxRoot, { recursive: true, force: true });
     }
   });
 });

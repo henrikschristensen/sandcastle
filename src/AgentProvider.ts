@@ -1,4 +1,11 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -2106,6 +2113,12 @@ const captureVibeDir = async ({
     const dest = join(destDir, rel);
     try {
       await mkdir(dirname(dest), { recursive: true });
+      // The host store mirrors vibe's own layout, where earlier host-side
+      // runs may have left read-only files (0400) and dirs (0500): both
+      // block overwriting even for the owner. Make the parent writable and
+      // drop any existing read-only dest first.
+      await chmod(dirname(dest), 0o700).catch(() => {});
+      await rm(dest, { force: true });
       if (rel === VIBE_META_JSON) {
         const content = await readSandboxFile(handle, file, tag);
         await writeFile(dest, transferVibeMetaJson(content, fromCwd, toCwd));
