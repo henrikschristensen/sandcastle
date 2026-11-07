@@ -1,6 +1,6 @@
 # Wayfinder map: support tea/codeberg (Gitea as an init issue tracker)
 
-**Tracker:** local-markdown fallback — the GitHub App token in this session is read-only (403 on issue writes), so per the wayfinder skill the map and its tickets live in this directory: `map.md` plus `tickets/*.md`. `publish-to-tracker.sh` mirrors them to the GitHub issue tracker once a `gh` token that can create issues is available. Frontier query: list `tickets/`, keep `state: open`, drop any whose `blocked_by` slugs are not all `state: closed`. Claim a ticket by setting `assignee` before working. Originating request: `/wayfinder support tea/codeberg`.
+**Tracker:** published to GitHub — map [#15](https://github.com/henrikschristensen/sandcastle/issues/15) with tickets [#16](https://github.com/henrikschristensen/sandcastle/issues/16)–[#24](https://github.com/henrikschristensen/sandcastle/issues/24) in `henrikschristensen/sandcastle` (sub-issues, native blocked-by edges, `## Blocked by` body convention). This directory (`map.md` + `tickets/*.md` on branch `research/tea-codeberg`) is the canonical working copy; `publish-to-tracker.sh` mirrors it. Frontier query: list `tickets/`, keep `state: open`, drop any whose `blocked_by` slugs are not all `state: closed` (on GitHub: open sub-issues of #15 whose blockers are all closed). Claim a ticket by setting `assignee` before working. Originating request: `/wayfinder support tea/codeberg`.
 
 ## Destination
 
