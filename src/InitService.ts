@@ -463,9 +463,11 @@ USER \${AGENT_UID}:\${AGENT_GID}
 # Install uv (Astral installer, version pinned like https://mistral.ai/vibe/install.sh),
 # then the Vibe CLI as a uv tool. uv ships a managed CPython >= 3.12, so the image's
 # python3.11 is irrelevant; mistral-vibe requires Python >= 3.12 (PyPI) and has no npm package.
-# Latest-at-build-time, matching the other templates.
+# Latest-at-build-time, matching the other templates. The installer puts uv in
+# ~/.local/bin, which this layer's PATH does not include yet (ENV PATH applies to
+# later layers only), so call it by absolute path.
 RUN curl -LsSf https://astral.sh/uv/0.11.26/install.sh | sh \\
-  && uv tool install mistral-vibe
+  && /home/agent/.local/bin/uv tool install mistral-vibe
 
 # uv and uv-installed tools (vibe, vibe-app-server) both live in ~/.local/bin
 ENV PATH="/home/agent/.local/bin:$PATH"
