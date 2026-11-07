@@ -33,12 +33,15 @@ A fully decided implementation spec for supporting the **Mistral Vibe CLI** as a
 - [Session storage design: host-sandbox capture/resume, cwd rewrite, layout helpers](tickets/09-vibe-session-storage-design.md) — Locked via grilling: host store mirrors vibe's own layout `~/.vibe/logs/session/unified/<id>/` (id-derivable paths, cwd ignored); capture moves the WHOLE session dir (child subagent dirs excluded); cwd rewrite touches only `meta.json` (`environment.working_directory`, `origin_directory`) via a new pure `transferVibeMetaJson`; dir-based custom `sessionStorage` (not `makeSessionFileStorage`) moving files via exec-find + copyFileOut/In; `readHostSession` returns concatenated journal in seq order; `findByIdOnHost` = dir match + meta.json scan fallback; `VibeOptions.sessionStorage = { hostSessionsDir?, sandboxSessionsDir? }`.
 - [Resume and fork semantics: --resume wiring, canFork](tickets/10-vibe-resume-fork.md) — Locked via grilling: `canFork: false` + `ForkNotSupportedError` on resume+fork (no `-p`-mode fork; ADR 0021); existing `resumePrecheck` works unchanged (id-derivable lookups); end-to-end flow = precheck → resumeIntoSandbox (cwd rewrite host→sandbox) → `--resume <id>` on the command → captureToHost back (sandbox→host); `captureSessions: false` disables capture+resume.
 - [Init scaffold: AGENT_REGISTRY entry, VIBE_DOCKERFILE, env example, host CLI](tickets/11-vibe-init-scaffold.md) — Locked via grilling: entry `{ name: "vibe", label: "Mistral Vibe", defaultModel: "mistral-medium-3.5", factoryImport: "vibe" }`; `VIBE_DOCKERFILE` = CLAUDE_CODE_DOCKERFILE skeleton with install `curl -LsSf https://astral.sh/uv/0.11.26/install.sh | sh && uv tool install mistral-vibe` as agent user (uv's managed CPython dodges bookworm's Python 3.11 < required 3.12; no npm package; package unpinned like all templates); `envExample` documents `MISTRAL_API_KEY`; `setupCommand` = `vibe "$(cat …)"` (positional initial prompt, not `-p`); `hostCli` = `{ command: "vibe", install: "uv tool install mistral-vibe" }`.
+- [Public surface and docs: exports, VibeOptions, guide pages, changeset, test list](tickets/12-vibe-public-surface-docs.md) — Locked via grilling: export `vibe` + `VibeOptions` from index.ts (transfer helper stays internal); docs = intro + `## VibeOptions` in agent-providers.md, storage path / captureSessions / resume+fork-table rows in agent-sessions.md, README untouched; minor changeset for `@ai-hero/sandcastle`; full test list (command forms, fork throw, parser fixtures from research captures, journal usage/context-window, transferVibeMetaJson, storage round-trip, captureSessions flag).
+
+**Map complete** — all 12 tickets closed; nothing left to decide before implementation. Hand off.
 
 ## Not yet specified
 
 <!-- in-scope fog; graduates as the frontier advances -->
 
-- `buildInteractiveArgs` form for the vibe TUI (ticket 06 sketched `["vibe", "--model", model]` + optional positional prompt; refine at implementation).
+_(none — every patch of fog graduated or was decided; `buildInteractiveArgs` for the vibe TUI is sketched in ticket 06 and is an implementation detail, not a decision)_
 
 ## Out of scope
 
