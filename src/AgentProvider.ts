@@ -15,6 +15,7 @@ import {
   findPiSessionOnHost,
   findVibeSessionOnHost,
   homeDir,
+  isRecord,
   listClaudeSubagentSessionsInSandbox,
   listFilesRecursive,
   locateSandboxSessionFile,
@@ -1849,10 +1850,6 @@ export const claudeCode = (
 // Mistral Vibe CLI agent provider
 // ---------------------------------------------------------------------------
 
-/** A parsed JSON value that is an object, so its fields can be read. */
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
-
 /** `value[key]` when `value` is an object. */
 const recordField = (value: unknown, key: string): unknown =>
   isRecord(value) ? value[key] : undefined;
@@ -1864,24 +1861,19 @@ const stringField = (value: unknown, key: string): string | undefined => {
 };
 
 /**
- * Vibe tool names (after stripping the unified harness's `file_system.`
- * prefix) mapped to the shared allowlist's canonical display names.
+ * Vibe's allowlisted tool names (after stripping the unified harness's
+ * `file_system.` prefix) mapped to the shared allowlist's canonical display
+ * name and the display-arg fields to try, in order, on the effect's `input`.
  */
-const VIBE_TOOL_NAMES: Record<string, string> = {
-  bash: "Bash",
-  web_search: "WebSearch",
-  web_fetch: "WebFetch",
-  subagent: "Agent",
-  skill: "Skill",
-};
-
-/** Display-arg fields to try, in order, on an effect detail's `input`. */
-const VIBE_TOOL_ARG_FIELDS: Record<string, readonly string[]> = {
-  Bash: ["command"],
-  WebSearch: ["query"],
-  WebFetch: ["url"],
-  Agent: ["agent_name", "description"],
-  Skill: ["skill", "name"],
+const VIBE_TOOLS: Record<
+  string,
+  { readonly name: string; readonly argFields: readonly string[] }
+> = {
+  bash: { name: "Bash", argFields: ["command"] },
+  web_search: { name: "WebSearch", argFields: ["query"] },
+  web_fetch: { name: "WebFetch", argFields: ["url"] },
+  subagent: { name: "Agent", argFields: ["agent_name", "description"] },
+  skill: { name: "Skill", argFields: ["skill", "name"] },
 };
 
 /**
@@ -1944,11 +1936,11 @@ const parseVibeStreamLine = (line: string): ParsedStreamEvent[] => {
     }
     const rawName = stringField(obj.detail, "toolName");
     if (rawName === undefined) return events;
-    const name =
-      VIBE_TOOL_NAMES[rawName.replace(/^file_system\./u, "").toLowerCase()];
-    if (name === undefined) return events; // not allowlisted
+    const tool =
+      VIBE_TOOLS[rawName.replace(/^file_system\./u, "").toLowerCase()];
+    if (tool === undefined) return events; // not allowlisted
     let args: string | undefined;
-    for (const field of VIBE_TOOL_ARG_FIELDS[name] ?? []) {
+    for (const field of tool.argFields) {
       const value = stringField(recordField(obj.detail, "input"), field);
       if (value !== undefined) {
         args = value;
@@ -1957,7 +1949,7 @@ const parseVibeStreamLine = (line: string): ParsedStreamEvent[] => {
     }
     args ??= stringField(recordField(obj.detail, "display"), "summary");
     if (args !== undefined) {
-      events.push({ type: "tool_call", name, args });
+      events.push({ type: "tool_call", name: tool.name, args });
     }
     return events;
   }

@@ -455,7 +455,7 @@ export const transferPiSession = (
 };
 
 /** A parsed JSON value that is an object (or array), so its fields can be read. */
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 // ---------------------------------------------------------------------------
