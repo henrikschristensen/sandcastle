@@ -2053,6 +2053,87 @@ const VIBE_META_JSON = "meta.json";
 const VIBE_JOURNAL_FILE = /^[0-9]{16}\.jsonl$/u;
 
 /**
+ * vibe ≥ 3.1 pins each session's plugin environment (the generation's
+ * `runtime-state.json` holds a `plugin_lock` naming content-addressed packages under
+ * `$VIBE_HOME/logs/session/plugins/`) and refuses to resume when that shared
+ * tree is missing (`plugin_snapshot_unavailable`, exit 2 — verified on 3.1.0).
+ * So capture/resume move the `plugins/` sibling of the sessions root too,
+ * verbatim; on the host it mirrors to `~/.vibe/logs/session/plugins`.
+ */
+const vibePluginsDirOf = (sessionsDir: string, isHost: boolean): string =>
+  isHost
+    ? join(dirname(sessionsDir), "plugins")
+    : posix.join(posix.dirname(sessionsDir), "plugins");
+
+/** Copy every file under a sandbox dir to a host dir; returns false when the source is absent. */
+const captureVibeDir = async ({
+  handle,
+  sourceDir,
+  destDir,
+  fromCwd,
+  toCwd,
+  tag,
+}: {
+  handle: BindMountSandboxHandle;
+  sourceDir: string;
+  destDir: string;
+  fromCwd: string;
+  toCwd: string;
+  tag: string;
+}): Promise<boolean> => {
+  const result = await handle.exec(`find ${JSON.stringify(sourceDir)} -type f`);
+  const stdout = result.stdout.trim();
+  if (result.exitCode !== 0 || stdout === "") {
+    return false;
+  }
+  for (const file of stdout.split("\n")) {
+    const rel = posix.relative(sourceDir, file);
+    const dest = join(destDir, rel);
+    await mkdir(dirname(dest), { recursive: true });
+    if (rel === VIBE_META_JSON) {
+      const content = await readSandboxFile(handle, file, tag);
+      await writeFile(dest, transferVibeMetaJson(content, fromCwd, toCwd));
+    } else {
+      await handle.copyFileOut(file, dest);
+    }
+  }
+  return true;
+};
+
+/** Copy every file under a host dir into a sandbox dir, rewriting only a root `meta.json`. */
+const resumeVibeDir = async ({
+  handle,
+  hostDir,
+  sandboxDir,
+  fromCwd,
+  toCwd,
+  tag,
+}: {
+  handle: BindMountSandboxHandle;
+  hostDir: string;
+  sandboxDir: string;
+  fromCwd: string;
+  toCwd: string;
+  tag: string;
+}): Promise<void> => {
+  for (const file of await listFilesRecursive(hostDir)) {
+    const rel = relative(hostDir, file).split(/[\\/]/u).join("/");
+    const dest = posix.join(sandboxDir, rel);
+    if (rel === VIBE_META_JSON) {
+      const content = await readFile(file, "utf8");
+      await writeSandboxFile(handle, {
+        sandboxPath: dest,
+        content: transferVibeMetaJson(content, fromCwd, toCwd),
+        tag,
+      });
+    } else {
+      await handle.exec(`mkdir -p ${JSON.stringify(posix.dirname(dest))}`);
+      await handle.copyFileIn(file, dest);
+    }
+  }
+};
+
+/**
  * Vibe's session is a whole directory (`unified/<id>/`: `meta.json`,
  * hash-chained `journal/*.jsonl`, content-addressed `chunks/`, …), so it
  * moves file-by-file through the handle's exec + single-file copy primitives
@@ -2089,49 +2170,55 @@ const makeVibeSessionStorage = (options?: VibeOptions): AgentSessionStorage => {
       return parts.join("\n");
     },
     captureToHost: async ({ hostCwd, sandboxCwd, sessionId, handle }) => {
-      const sandboxDir = posix.join(sandboxRootOf(handle), sessionId);
+      const sandboxRoot = sandboxRootOf(handle);
+      const sandboxDir = posix.join(sandboxRoot, sessionId);
       const hostDir = join(hostRoot, sessionId);
-      const result = await handle.exec(
-        `find ${JSON.stringify(sandboxDir)} -type f`,
-      );
-      const stdout = result.stdout.trim();
-      const files = stdout === "" ? [] : stdout.split("\n");
-      if (result.exitCode !== 0 || files.length === 0) {
+      const found = await captureVibeDir({
+        handle,
+        sourceDir: sandboxDir,
+        destDir: hostDir,
+        fromCwd: sandboxCwd,
+        toCwd: hostCwd,
+        tag: "vibe-cap",
+      });
+      if (!found) {
         throw new Error(`vibe session ${sessionId} not found in ${sandboxDir}`);
       }
-      for (const file of files) {
-        const rel = posix.relative(sandboxDir, file);
-        const dest = join(hostDir, rel);
-        await mkdir(dirname(dest), { recursive: true });
-        if (rel === VIBE_META_JSON) {
-          const content = await readSandboxFile(handle, file, "vibe-cap");
-          await writeFile(
-            dest,
-            transferVibeMetaJson(content, sandboxCwd, hostCwd),
-          );
-        } else {
-          await handle.copyFileOut(file, dest);
-        }
-      }
+      // The shared plugin package tree, when the sandbox has one (best-effort:
+      // older vibe versions do not create it, and resume works without it).
+      await captureVibeDir({
+        handle,
+        sourceDir: vibePluginsDirOf(sandboxRoot, false),
+        destDir: vibePluginsDirOf(hostRoot, true),
+        fromCwd: sandboxCwd,
+        toCwd: hostCwd,
+        tag: "vibe-plugins",
+      });
     },
     resumeIntoSandbox: async ({ hostCwd, sandboxCwd, sessionId, handle }) => {
       const found = await findVibeSessionOnHost(sessionId, hostRoot);
       const hostDir = requireHostSessionPath(found, sessionId);
-      const sandboxDir = posix.join(sandboxRootOf(handle), sessionId);
-      for (const file of await listFilesRecursive(hostDir)) {
-        const rel = relative(hostDir, file).split(/[\\/]/u).join("/");
-        const dest = posix.join(sandboxDir, rel);
-        if (rel === VIBE_META_JSON) {
-          const content = await readFile(file, "utf8");
-          await writeSandboxFile(handle, {
-            sandboxPath: dest,
-            content: transferVibeMetaJson(content, hostCwd, sandboxCwd),
-            tag: "vibe-res",
-          });
-        } else {
-          await handle.exec(`mkdir -p ${JSON.stringify(posix.dirname(dest))}`);
-          await handle.copyFileIn(file, dest);
-        }
+      const sandboxRoot = sandboxRootOf(handle);
+      await resumeVibeDir({
+        handle,
+        hostDir,
+        sandboxDir: posix.join(sandboxRoot, sessionId),
+        fromCwd: hostCwd,
+        toCwd: sandboxCwd,
+        tag: "vibe-res",
+      });
+      // The pinned plugin environment a resumed session needs (vibe ≥ 3.1);
+      // absent when the session was captured without one.
+      const hostPlugins = vibePluginsDirOf(hostRoot, true);
+      if (await pathExists(hostPlugins)) {
+        await resumeVibeDir({
+          handle,
+          hostDir: hostPlugins,
+          sandboxDir: vibePluginsDirOf(sandboxRoot, false),
+          fromCwd: hostCwd,
+          toCwd: sandboxCwd,
+          tag: "vibe-plugins",
+        });
       }
     },
     findByIdOnHost: (id) => findVibeSessionOnHost(id, hostRoot),

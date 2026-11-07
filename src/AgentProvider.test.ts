@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { assert, describe, expect, it } from "vitest";
 import {
   claudeCode,
@@ -4239,6 +4239,174 @@ describe("vibe sessionStorage sandbox dirs", () => {
     } finally {
       await rm(hostDir, { recursive: true, force: true });
       await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("vibe sessionStorage plugin tree", () => {
+  /** Bind-mount handle backed by the host filesystem (sandbox path == host path). */
+  const fsHandle = (): BindMountSandboxHandle => ({
+    worktreePath: "/workspace",
+    exec: async (command, options) => {
+      const { exec } = await import("node:child_process");
+      return new Promise((resolve) => {
+        const child = exec(command, (err, stdout, stderr) => {
+          resolve({
+            stdout: stdout.toString(),
+            stderr: stderr.toString(),
+            exitCode: err && typeof err.code === "number" ? err.code : 0,
+          });
+        });
+        child.stdin?.end(options?.stdin);
+      });
+    },
+    copyFileIn: async (hostPath, sandboxPath) => {
+      const { copyFile } = await import("node:fs/promises");
+      await copyFile(hostPath, sandboxPath);
+    },
+    copyFileOut: async (sandboxPath, hostPath) => {
+      const { copyFile } = await import("node:fs/promises");
+      await copyFile(sandboxPath, hostPath);
+    },
+    close: async () => {},
+  });
+
+  const ID = "fed1d9fe-b689-ef5f-18ac-eeae7651cb56";
+
+  it("captureToHost also mirrors the sandbox plugins/ tree next to the host sessions root, and resumeIntoSandbox moves it back", async () => {
+    const hostRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    try {
+      // Sandbox: unified/<id>/ session + logs/session/plugins/ tree.
+      const sessionDir = join(sandboxRoot, ID);
+      await mkdir(join(sessionDir, "journal"), { recursive: true });
+      await writeFile(
+        join(sessionDir, "meta.json"),
+        JSON.stringify({
+          session_id: ID,
+          environment: { working_directory: "/sandbox/repo" },
+        }),
+      );
+      await writeFile(
+        join(sessionDir, "journal", "0000000000000001.jsonl"),
+        "{}\n",
+      );
+      const pluginPkg = join(
+        dirname(sandboxRoot),
+        "plugins",
+        "packages",
+        "2d",
+        "abcdef",
+      );
+      await mkdir(pluginPkg, { recursive: true });
+      await writeFile(join(pluginPkg, "SKILL.md"), "# vibe skill\n");
+
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostRoot,
+          sandboxSessionsDir: sandboxRoot,
+        },
+      });
+      await sessionStorage.captureToHost({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: fsHandle(),
+      });
+
+      // Host mirror: <hostRoot>/<id>/ plus <dirname(hostRoot)>/plugins/.
+      const hostPlugin = join(
+        dirname(hostRoot),
+        "plugins",
+        "packages",
+        "2d",
+        "abcdef",
+        "SKILL.md",
+      );
+      expect(await readFile(hostPlugin, "utf8")).toBe("# vibe skill\n");
+
+      // Resume into a fresh sandbox root: session + plugins both land.
+      const sandbox2 = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx2-"));
+      try {
+        const { sessionStorage: resumed } = vibe("m", {
+          sessionStorage: {
+            hostSessionsDir: hostRoot,
+            sandboxSessionsDir: sandbox2,
+          },
+        });
+        await resumed.resumeIntoSandbox({
+          hostCwd: "/host/repo",
+          sandboxCwd: "/sandbox/repo",
+          sessionId: ID,
+          handle: fsHandle(),
+        });
+        const meta = JSON.parse(
+          await readFile(join(sandbox2, ID, "meta.json"), "utf8"),
+        );
+        expect(meta.environment.working_directory).toBe("/sandbox/repo");
+        expect(
+          await readFile(
+            join(
+              dirname(sandbox2),
+              "plugins",
+              "packages",
+              "2d",
+              "abcdef",
+              "SKILL.md",
+            ),
+            "utf8",
+          ),
+        ).toBe("# vibe skill\n");
+      } finally {
+        await rm(sandbox2, { recursive: true, force: true });
+      }
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+      await rm(sandboxRoot, { recursive: true, force: true });
+      await rm(join(dirname(hostRoot), "plugins"), {
+        recursive: true,
+        force: true,
+      });
+      await rm(join(dirname(sandboxRoot), "plugins"), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+
+  it("captureToHost tolerates a sandbox without a plugins/ tree", async () => {
+    const hostRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxRoot = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    try {
+      const sessionDir = join(sandboxRoot, ID);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(sessionDir, "meta.json"), "{}");
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostRoot,
+          sandboxSessionsDir: sandboxRoot,
+        },
+      });
+      await sessionStorage.captureToHost({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: fsHandle(),
+      });
+      await expect(sessionStorage.existsOnHost("/host/repo", ID)).resolves.toBe(
+        true,
+      );
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+      await rm(sandboxRoot, { recursive: true, force: true });
+      await rm(join(dirname(hostRoot), "plugins"), {
+        recursive: true,
+        force: true,
+      });
+      await rm(join(dirname(sandboxRoot), "plugins"), {
+        recursive: true,
+        force: true,
+      });
     }
   });
 });
