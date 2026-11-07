@@ -15,6 +15,7 @@ A fully decided, plan-only implementation spec for adding **Gitea issues** — C
   - `src/InitService.ts` — the registry entries for `github-issues` (label-filtered JSON list, GH_TOKEN/GH_HOST env, native-sandbox env note) and `beads` (pinned version, checksum-verified binary install, sandboxOptions) are the patterns to follow.
   - `src/templates/` — the scaffolded prompt files the template args land in.
   - tea CLI upstream: https://code.gitea.io/tea (source at https://gitea.com/gitea/tea, docs in `docs/CLI.md`).
+- **Upstream caveat (from tickets 01/03):** tea's repo is archived upstream in favor of `gt` (gitea.com/gitea/cli), and Codeberg runs **Forgejo 17** (Gitea-compatible API). tea v0.16.0 still meets every must-have; the destination stays tea (grilled with the user), but pinning/longevity tickets should weigh the archival notice.
 - **Scope decisions locked while charting (grilled with the user):**
   - Destination is the init issue-tracker integration only — not Codeberg-as-git-host.
   - Entry is a generic `gitea` entry (any Gitea instance); Codeberg is the documented default via `GITEA_SERVER_URL=https://codeberg.org`.
@@ -27,19 +28,17 @@ A fully decided, plan-only implementation spec for adding **Gitea issues** — C
 
 <!-- one line per closed ticket: gist of the answer + link to the ticket -->
 
-_(none yet)_
+- [Research: tea CLI capability audit against the issue-tracker must-haves](tickets/01-tea-cli-capabilities.md) — tea v0.16.0 meets every must-have. List: `tea issues list --state open --labels Sandcastle --limit 100 -o json` (all JSON values are strings; `index` needs `tonumber` in jq). View: `tea issues <ID> --comments -o json`. Close: `tea issues close <ID>` (no comment flag) plus a separate `tea comments add <ID> "…"`. Auth is pure env vars: `GITEA_INSTANCE_URL` + `GITEA_TOKEN` build an in-memory login with the version check auto-disabled (the `GITEA_SERVER_*` names only feed `tea login add`). Repo is auto-detected from the branch's git remote (https/ssh/subpaths/ports; `-r owner/repo` overrides). Exit codes 0/1. Label filters are OR; unknown labels are silently dropped — use a single label. Findings: `research/tea-cli-capabilities.md`.
+- [Research: installing a pinned tea release in a Debian sandbox image (assets, checksums, Dockerfile RUN block)](tickets/02-tea-docker-install.md) — Pin `v0.16.0` (2026-09-10). Assets are **bare binaries** `tea-0.16.0-linux-amd64(.xz)` (+ `.sha256` sidecars) from `gitea.com/gitea/tea/releases/download/vX.Y.Z/` (byte-identical mirror `dl.gitea.com/tea/X.Y.Z/`), with a standard `checksums.txt` that works with the beads `grep … | sha256sum -c -` pattern. The binary is fully static (`CGO_ENABLED=0`; `ldd` → not dynamic), so no runtime apt deps and bookworm's glibc is irrelevant; no apt package exists (bookworm's `tea` is the unrelated TEA text editor). Candidate single `RUN` block with `ARG TEA_VERSION=0.16.0` is in the doc; sanity check is `tea --version`. Findings: `research/tea-docker-install.md`.
+- [Research: Codeberg.org token creation, scopes, and Gitea specifics the scaffold depends on](tickets/03-codeberg-token-scopes.md) — Codeberg runs Forgejo 17 (Gitea-compatible). API base `https://codeberg.org/api/v1`. Token: profile → Settings → Applications → New access token, **minimum scopes `read:issue` + `write:issue`** for list/view-with-comments/close-with-comment; token shown once; repo-access selector available. Labels filter server-side (`?labels=…`). No published numeric quota — fair use with 429 rate limiting (10-min windows). Proposed `.env.example` comment text is §8 of the doc. Findings: `research/codeberg-token-scopes.md`.
 
 ## Not yet specified
 
 <!-- in-scope fog; graduates as the frontier advances -->
 
-- Exact JSON shape of `tea issue list` output and the jq shaping the scaffolded prompt needs (graduates from 01).
-- Whether tea can authenticate in an unattended sandbox purely from env vars, or needs a `tea login add` config step (graduates into 04).
-- tea's server version-check behavior and how to disable it for unattended runs (graduates from 01 into 04/05).
-- Exact tea release asset names and checksums for the Dockerfile snippet (graduates from 02 into 06).
-- Codeberg token scope names and any Codeberg-specific quirks the scaffold depends on (graduates from 03 into 04).
+- Empirical end-to-end run of the locked commands and env vars against a real Codeberg repo needs a token/test repo the user provisions (09).
+- Whether the `Sandcastle`-label convention is documented anywhere for Gitea repos (the github-issues scaffold relies on users labeling issues `Sandcastle`; 05/08 must decide where that instruction lands for gitea).
 - Whether a host-tea vs image-tea drift warning is ever needed (expected: no — tea keeps no shared local state; the beads warning exists because bd owns the database) — decided in 06.
-- Empirical end-to-end run of the locked commands needs a Codeberg token/test repo the user provisions (09).
 
 ## Out of scope
 
@@ -49,3 +48,4 @@ _(none yet)_
 - tea pull-request management (`tea pr …`).
 - MCP-server-only integrations.
 - Changes to the `custom` tracker flow / SETUP_ISSUE_TRACKER.md.
+- Switching the scaffold to `gt` (gitea/cli, tea's archived successor) instead of tea — the destination is tea, grilled with the user.
