@@ -552,6 +552,118 @@ export const opencodeHostDatabase = (): string =>
   join(homeDir(), ".local", "share", "opencode", "opencode.db");
 
 // ---------------------------------------------------------------------------
+// Mistral Vibe session paths and transfer
+// ---------------------------------------------------------------------------
+
+/**
+ * Vibe 3.x writes each session to a directory `$VIBE_HOME/logs/session/unified/<full-uuid>/`
+ * (dir name == session id), holding `meta.json` plus a hash-chained
+ * `journal/*.jsonl` and content-addressed `chunks/`. The host store mirrors
+ * vibe's own layout, so a captured session can also be resumed on the host
+ * with `vibe --resume <id>` directly.
+ */
+export const vibeHostSessionsDir = (): string =>
+  join(homeDir(), ".vibe", "logs", "session", "unified");
+
+/** The sandbox-side unified store, under the sandbox home (`VIBE_HOME` defaults to `~/.vibe`). */
+export const vibeSandboxSessionsDir = (dirs: SandboxDirs): string =>
+  posix.join(dirs.home, ".vibe", "logs", "session", "unified");
+
+/**
+ * Locate a vibe session on the host by its id: the `<root>/<id>` directory
+ * first (the dir name is the full session UUID, so paths are id-derivable),
+ * then a scan of subdirectories' `meta.json` `session_id` as a fallback.
+ */
+export const findVibeSessionOnHost = async (
+  id: string,
+  sessionsDir?: string,
+): Promise<HostSessionLookup> => {
+  const root = sessionsDir ?? vibeHostSessionsDir();
+  const direct = join(root, id);
+  if (await pathExists(direct)) {
+    return { path: direct, searchedRoot: root };
+  }
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return { path: undefined, searchedRoot: root };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const dir = join(root, entry.name);
+    try {
+      const meta: unknown = JSON.parse(
+        await readFile(join(dir, "meta.json"), "utf8"),
+      );
+      if (isRecord(meta) && meta.session_id === id) {
+        return { path: dir, searchedRoot: root };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return { path: undefined, searchedRoot: root };
+};
+
+/** Every regular file under `root`, recursively, as absolute paths. */
+export const listFilesRecursive = async (root: string): Promise<string[]> => {
+  const files: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const child = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(child);
+      } else if (entry.isFile()) {
+        files.push(child);
+      }
+    }
+  };
+  await walk(root);
+  return files;
+};
+
+/**
+ * Rewrite a vibe session's `meta.json` string, replacing the recorded cwd
+ * (`environment.working_directory` and `origin_directory`) when it matches
+ * `fromCwd` with `toCwd`. The journal carries no cwd, so `meta.json` is the
+ * only file that needs rewriting — a resumed session re-roots into the
+ * recorded working directory, so the rewrite is load-bearing for resume.
+ * Pure function — no file I/O; an unparseable input is returned unchanged.
+ */
+export const transferVibeMetaJson = (
+  content: string,
+  fromCwd: string,
+  toCwd: string,
+): string => {
+  let meta: unknown;
+  try {
+    meta = JSON.parse(content);
+  } catch {
+    return content;
+  }
+  if (!isRecord(meta)) {
+    return content;
+  }
+  const environment = isRecord(meta.environment) ? meta.environment : undefined;
+  if (environment !== undefined && environment.working_directory === fromCwd) {
+    environment.working_directory = toCwd;
+  }
+  if (meta.origin_directory === fromCwd) {
+    meta.origin_directory = toCwd;
+  }
+  return JSON.stringify(meta, null, 2);
+};
+
+// ---------------------------------------------------------------------------
 // Session storage for agents that keep each session in one file
 // ---------------------------------------------------------------------------
 

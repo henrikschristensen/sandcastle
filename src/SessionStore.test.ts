@@ -7,12 +7,17 @@ import {
   findClaudeSessionOnHost,
   findCodexSessionOnHost,
   findPiSessionOnHost,
+  findVibeSessionOnHost,
   listClaudeSubagentSessionsInSandbox,
+  listFilesRecursive,
   makeSessionFileStorage,
   piSessionDirPath,
   transferClaudeSession,
   transferCodexSession,
   transferPiSession,
+  transferVibeMetaJson,
+  vibeHostSessionsDir,
+  vibeSandboxSessionsDir,
 } from "./SessionStore.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -698,5 +703,164 @@ describe("makeSessionFileStorage", () => {
         searchedRoot: dirs.host,
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mistral Vibe session paths and transfer
+// ---------------------------------------------------------------------------
+
+describe("vibe session dirs", () => {
+  it("host sessions dir mirrors vibe's own unified store under ~/.vibe", () => {
+    expect(vibeHostSessionsDir()).toBe(
+      join(process.env.HOME ?? "~", ".vibe", "logs", "session", "unified"),
+    );
+  });
+
+  it("sandbox sessions dir is $VIBE_HOME/logs/session/unified under the sandbox home", () => {
+    expect(vibeSandboxSessionsDir({ home: "/home/agent", tmp: "/tmp" })).toBe(
+      "/home/agent/.vibe/logs/session/unified",
+    );
+  });
+});
+
+describe("transferVibeMetaJson", () => {
+  it("rewrites environment.working_directory and origin_directory when they match fromCwd", () => {
+    const meta = JSON.stringify({
+      session_id: "abc-123",
+      environment: { working_directory: "/sandbox/repo" },
+      origin_directory: "/sandbox/repo",
+      username: "agent",
+    });
+    const rewritten = JSON.parse(
+      transferVibeMetaJson(meta, "/sandbox/repo", "/host/repo"),
+    );
+    expect(rewritten.environment.working_directory).toBe("/host/repo");
+    expect(rewritten.origin_directory).toBe("/host/repo");
+    expect(rewritten.session_id).toBe("abc-123");
+    expect(rewritten.username).toBe("agent");
+  });
+
+  it("leaves non-matching cwd values untouched (round-trips semantically)", () => {
+    const meta = JSON.stringify({
+      session_id: "abc-123",
+      environment: { working_directory: "/elsewhere" },
+      origin_directory: "/elsewhere",
+    });
+    expect(JSON.parse(transferVibeMetaJson(meta, "/a", "/b"))).toStrictEqual(
+      JSON.parse(meta),
+    );
+  });
+
+  it("rewrites only the matching field when they differ", () => {
+    const meta = JSON.stringify({
+      environment: { working_directory: "/sandbox/repo" },
+      origin_directory: "/original/place",
+    });
+    const rewritten = JSON.parse(
+      transferVibeMetaJson(meta, "/sandbox/repo", "/host/repo"),
+    );
+    expect(rewritten.environment.working_directory).toBe("/host/repo");
+    expect(rewritten.origin_directory).toBe("/original/place");
+  });
+
+  it("tolerates a missing environment object", () => {
+    const meta = JSON.stringify({ session_id: "abc", origin_directory: "/a" });
+    const rewritten = JSON.parse(transferVibeMetaJson(meta, "/a", "/b"));
+    expect(rewritten.origin_directory).toBe("/b");
+    expect(rewritten.environment).toBeUndefined();
+  });
+
+  it("returns unparseable content unchanged", () => {
+    expect(transferVibeMetaJson("{not json", "/a", "/b")).toBe("{not json");
+    expect(transferVibeMetaJson('"just a string"', "/a", "/b")).toBe(
+      '"just a string"',
+    );
+  });
+});
+
+describe("findVibeSessionOnHost", () => {
+  it("finds the session dir directly by id (dir name == session UUID)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandcastle-find-vibe-"));
+    try {
+      const id = "962f53da-75fc-63be-2437-7758f813def0";
+      await mkdir(join(dir, id), { recursive: true });
+      await expect(findVibeSessionOnHost(id, dir)).resolves.toStrictEqual({
+        path: join(dir, id),
+        searchedRoot: dir,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to scanning subdirectories' meta.json session_id", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandcastle-find-vibe-"));
+    try {
+      const id = "962f53da-75fc-63be-2437-7758f813def0";
+      // Dir name does not equal the id; meta.json carries it.
+      const sessionDir = join(dir, "some-other-name");
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(sessionDir, "meta.json"),
+        JSON.stringify({ session_id: id }),
+      );
+      await expect(findVibeSessionOnHost(id, dir)).resolves.toStrictEqual({
+        path: sessionDir,
+        searchedRoot: dir,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined path and names the searched root when absent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandcastle-find-vibe-"));
+    try {
+      await expect(
+        findVibeSessionOnHost("missing", dir),
+      ).resolves.toStrictEqual({ path: undefined, searchedRoot: dir });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined path when the sessions dir does not exist", async () => {
+    const result = await findVibeSessionOnHost(
+      "nope",
+      join(tmpdir(), "sandcastle-vibe-does-not-exist-xyz"),
+    );
+    expect(result.path).toBeUndefined();
+  });
+});
+
+describe("listFilesRecursive", () => {
+  it("lists every regular file under a directory tree", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-files-"));
+    try {
+      await mkdir(join(dir, "journal"), { recursive: true });
+      await mkdir(join(dir, "chunks"), { recursive: true });
+      await writeFile(join(dir, "meta.json"), "{}");
+      await writeFile(join(dir, "CURRENT"), "{}");
+      await writeFile(join(dir, "journal", "0000000000000001.jsonl"), "{}");
+      await writeFile(join(dir, "chunks", "abc.json"), "{}");
+      const files = (await listFilesRecursive(dir)).map((f) =>
+        f.slice(dir.length + 1),
+      );
+      expect(files.sort()).toStrictEqual([
+        "CURRENT",
+        "chunks/abc.json",
+        "journal/0000000000000001.jsonl",
+        "meta.json",
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an empty list for a missing directory", async () => {
+    await expect(
+      listFilesRecursive(join(tmpdir(), "sandcastle-vibe-missing-xyz")),
+    ).resolves.toStrictEqual([]);
   });
 });

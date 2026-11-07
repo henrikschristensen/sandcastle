@@ -11,6 +11,7 @@ import {
   cursor,
   opencode,
   pi,
+  vibe,
 } from "./AgentProvider.js";
 import type { AgentCommandOptions, AgentProvider } from "./AgentProvider.js";
 import { ForkNotSupportedError } from "./errors.js";
@@ -3370,5 +3371,832 @@ describe("errors the agent reports in its own stream", () => {
     expect(copilot("m").parseStreamLine(line)).toStrictEqual([
       { type: "error", message: "boom" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vibe factory (Mistral Vibe CLI, verified against vibe 3.0.4 — stream
+// fixtures are the sanitized captures from research/vibe-p-output-schema.md §5
+// and research/vibe-roundtrip/run1.out)
+// ---------------------------------------------------------------------------
+
+/** One sanitized `--output streaming` line: a user message entry. */
+const VIBE_USER_ENTRY = JSON.stringify({
+  id: "user-turn-2b6db62af729b07709306a545ddbb9fb-1",
+  sessionId: "962f53da-75fc-63be-2437-7758f813def0",
+  turnId: "turn-2b6db62af729b07709306a545ddbb9fb",
+  inputEntryId: null,
+  createdAt: 1794049258537,
+  updatedAt: 1794049258537,
+  generationStatus: "completed",
+  relatedEntryId: null,
+  type: "message",
+  role: "user",
+  content: [{ type: "text", text: "Reply with exactly: OK" }],
+  source: "turn_start",
+  userDisplayContent: null,
+  outcome: null,
+});
+
+/** One sanitized `--output streaming` line: an assistant message entry. */
+const VIBE_ASSISTANT_ENTRY = JSON.stringify({
+  id: "assistant-e2f0de11-332e-5bea-925f-d771bee91f77",
+  sessionId: "962f53da-75fc-63be-2437-7758f813def0",
+  turnId: "turn-2b6db62af729b07709306a545ddbb9fb",
+  inputEntryId: "user-turn-2b6db62af729b07709306a545ddbb9fb-1",
+  createdAt: 1794049263007,
+  updatedAt: 1794049263007,
+  generationStatus: "completed",
+  relatedEntryId: null,
+  type: "message",
+  role: "assistant",
+  content: [{ type: "text", text: "OK" }],
+  source: "harness",
+  userDisplayContent: null,
+  outcome: { type: "committed" },
+});
+
+/** One sanitized `--output streaming` line: a `file_system.bash` effect. */
+const VIBE_BASH_EFFECT = JSON.stringify({
+  id: "effect-c9f4dfd9-75b8-5259-a72b-5fdf5a0c16b7",
+  sessionId: "5154f63d-170d-c603-39eb-2c93d344bcbb",
+  turnId: "turn-5897fc80fd36998c864932980727f83c",
+  inputEntryId: "user-turn-5897fc80fd36998c864932980727f83c-1",
+  createdAt: 1794048315902,
+  updatedAt: 1794048315928,
+  generationStatus: "completed",
+  relatedEntryId: null,
+  type: "effect",
+  title: "file_system.bash",
+  detail: {
+    toolName: "file_system.bash",
+    display: {
+      summary: "bash: echo stream-demo-456",
+      verb: "Running",
+      message: "echo stream-demo-456",
+      settledVerb: "Ran",
+      settledMessage: "echo stream-demo-456",
+      statusText: "Running command",
+    },
+    kind: "shell",
+    input: { command: "echo stream-demo-456" },
+  },
+  state: { status: "completed", outputText: "stream-demo-456\n" },
+});
+
+describe("vibe factory", () => {
+  it("returns a provider with name 'vibe'", () => {
+    expect(vibe("mistral-medium-3.5").name).toBe("vibe");
+  });
+
+  it("captures sessions by default, and can opt out", () => {
+    expect(vibe("mistral-medium-3.5").captureSessions).toBe(true);
+    expect(
+      vibe("mistral-medium-3.5", { captureSessions: false }).captureSessions,
+    ).toBe(false);
+  });
+
+  it("injects the headless env defaults, with options.env winning on overlap", () => {
+    expect(vibe("m").env).toStrictEqual({
+      VIBE_ENABLE_TELEMETRY: "false",
+      VIBE_ENABLE_UPDATE_CHECKS: "false",
+    });
+    expect(
+      vibe("m", {
+        env: {
+          MISTRAL_API_KEY: "sk-test",
+          VIBE_ENABLE_TELEMETRY: "true",
+        },
+      }).env,
+    ).toStrictEqual({
+      VIBE_ENABLE_TELEMETRY: "true",
+      VIBE_ENABLE_UPDATE_CHECKS: "false",
+      MISTRAL_API_KEY: "sk-test",
+    });
+  });
+
+  it("buildPrintCommand: fresh AFK run pipes the prompt on stdin with --output streaming and --auto-approve", () => {
+    const provider = vibe("mistral-medium-3.5");
+    const { command, stdin } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toBe(
+      "vibe -p --output streaming --model 'mistral-medium-3.5' --auto-approve",
+    );
+    expect(stdin).toBe("do something");
+  });
+
+  it("buildPrintCommand omits --auto-approve when dangerouslySkipPermissions is false", () => {
+    const provider = vibe("mistral-medium-3.5");
+    const { command, stdin } = provider.buildPrintCommand({
+      prompt: "hi",
+      dangerouslySkipPermissions: false,
+    });
+    expect(command).toBe(
+      "vibe -p --output streaming --model 'mistral-medium-3.5'",
+    );
+    expect(command).not.toContain("--auto-approve");
+    expect(stdin).toBe("hi");
+  });
+
+  it("buildPrintCommand appends --resume <id> (shell-escaped) when resuming", () => {
+    const provider = vibe("mistral-medium-3.5");
+    const { command, stdin } = provider.buildPrintCommand({
+      ...opts("follow up"),
+      resumeSession: "962f53da-75fc-63be-2437-7758f813def0",
+    });
+    expect(command).toBe(
+      "vibe -p --output streaming --model 'mistral-medium-3.5' --auto-approve --resume '962f53da-75fc-63be-2437-7758f813def0'",
+    );
+    expect(stdin).toBe("follow up");
+  });
+
+  it("buildPrintCommand shell-escapes the model and resume id", () => {
+    const provider = vibe("it's a model");
+    const { command } = provider.buildPrintCommand({
+      ...opts("x"),
+      resumeSession: "id'with'quotes",
+    });
+    expect(command).toContain(String.raw`--model 'it'\''s a model'`);
+    expect(command).toContain(String.raw`--resume 'id'\''with'\''quotes'`);
+  });
+
+  it("buildPrintCommand throws ForkNotSupportedError naming vibe when asked to resume+fork", () => {
+    const provider = vibe("mistral-medium-3.5");
+    expect(() =>
+      provider.buildPrintCommand({
+        ...opts("test"),
+        resumeSession: "abc-123",
+        forkSession: true,
+      }),
+    ).toThrow(ForkNotSupportedError);
+    expect(() =>
+      provider.buildPrintCommand({
+        ...opts("test"),
+        resumeSession: "abc-123",
+        forkSession: true,
+      }),
+    ).toThrow(/vibe/u);
+  });
+
+  it("declares that it cannot fork (the CLI has no print-mode fork)", () => {
+    expect(vibe("mistral-medium-3.5").sessionStorage.canFork).toBe(false);
+  });
+
+  it("buildInteractiveArgs returns the TUI argv with an optional positional prompt", () => {
+    const provider = vibe("mistral-medium-3.5");
+    expect(buildInteractiveArgs(provider, opts("hello"))).toStrictEqual([
+      "vibe",
+      "--model",
+      "mistral-medium-3.5",
+      "hello",
+    ]);
+    expect(
+      buildInteractiveArgs(provider, {
+        prompt: "",
+        dangerouslySkipPermissions: true,
+      }),
+    ).toStrictEqual(["vibe", "--model", "mistral-medium-3.5"]);
+  });
+
+  it("parseStreamLine emits session_id from any entry's sessionId", () => {
+    const provider = vibe("m");
+    expect(provider.parseStreamLine(VIBE_USER_ENTRY)).toStrictEqual([
+      { type: "session_id", sessionId: "962f53da-75fc-63be-2437-7758f813def0" },
+    ]);
+  });
+
+  it("parseStreamLine maps an assistant message to text + result", () => {
+    const provider = vibe("m");
+    expect(provider.parseStreamLine(VIBE_ASSISTANT_ENTRY)).toStrictEqual([
+      { type: "session_id", sessionId: "962f53da-75fc-63be-2437-7758f813def0" },
+      { type: "text", text: "OK" },
+      { type: "result", result: "OK" },
+    ]);
+  });
+
+  it("parseStreamLine joins multiple text blocks with blank lines", () => {
+    const provider = vibe("m");
+    const line = JSON.stringify({
+      sessionId: "s1",
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "text", text: "first" },
+        { type: "image", data: "…" },
+        { type: "text", text: "second" },
+      ],
+      outcome: { type: "committed" },
+    });
+    expect(provider.parseStreamLine(line)).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "text", text: "first\n\nsecond" },
+      { type: "result", result: "first\n\nsecond" },
+    ]);
+  });
+
+  it("parseStreamLine skips assistant messages with a discarded outcome", () => {
+    const provider = vibe("m");
+    const line = JSON.stringify({
+      sessionId: "s1",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "superseded" }],
+      outcome: { type: "discarded", cause: "retry" },
+    });
+    expect(provider.parseStreamLine(line)).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+    ]);
+  });
+
+  it("parseStreamLine maps a file_system.bash effect to a Bash tool_call with input.command", () => {
+    const provider = vibe("m");
+    expect(provider.parseStreamLine(VIBE_BASH_EFFECT)).toStrictEqual([
+      { type: "session_id", sessionId: "5154f63d-170d-c603-39eb-2c93d344bcbb" },
+      { type: "tool_call", name: "Bash", args: "echo stream-demo-456" },
+    ]);
+  });
+
+  it("parseStreamLine maps web_search / web_fetch / subagent / skill to the allowlist", () => {
+    const provider = vibe("m");
+    const effect = (toolName: string, input: unknown, summary: string) =>
+      JSON.stringify({
+        sessionId: "s1",
+        type: "effect",
+        title: toolName,
+        detail: {
+          toolName,
+          display: { summary },
+          kind: "tool",
+          input,
+        },
+        state: { status: "completed" },
+      });
+    expect(
+      provider.parseStreamLine(
+        effect("web_search", { query: "vibe cli" }, "search"),
+      ),
+    ).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "tool_call", name: "WebSearch", args: "vibe cli" },
+    ]);
+    expect(
+      provider.parseStreamLine(
+        effect("file_system.web_fetch", { url: "https://x" }, "fetch"),
+      ),
+    ).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "tool_call", name: "WebFetch", args: "https://x" },
+    ]);
+    expect(
+      provider.parseStreamLine(
+        effect("subagent", { agent_name: "researcher" }, "spawn"),
+      ),
+    ).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "tool_call", name: "Agent", args: "researcher" },
+    ]);
+    expect(
+      provider.parseStreamLine(
+        effect("skill", { skill: "wayfinder" }, "run skill"),
+      ),
+    ).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "tool_call", name: "Skill", args: "wayfinder" },
+    ]);
+  });
+
+  it("parseStreamLine falls back to display.summary when the input field is missing", () => {
+    const provider = vibe("m");
+    const line = JSON.stringify({
+      sessionId: "s1",
+      type: "effect",
+      title: "bash",
+      detail: {
+        toolName: "bash",
+        display: { summary: "bash: make test" },
+        kind: "shell",
+        input: {},
+      },
+      state: { status: "completed" },
+    });
+    expect(provider.parseStreamLine(line)).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "tool_call", name: "Bash", args: "bash: make test" },
+    ]);
+  });
+
+  it("parseStreamLine skips non-allowlisted effects but keeps the session_id", () => {
+    const provider = vibe("m");
+    const line = JSON.stringify({
+      sessionId: "s1",
+      type: "effect",
+      title: "file_system.read_file",
+      detail: {
+        toolName: "file_system.read_file",
+        display: { summary: "read README.md" },
+        kind: "file_read",
+        input: { file_path: "README.md" },
+      },
+      state: { status: "completed" },
+    });
+    expect(provider.parseStreamLine(line)).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+    ]);
+  });
+
+  it("parseStreamLine maps a notice with level error to an error event", () => {
+    const provider = vibe("m");
+    const line = JSON.stringify({
+      sessionId: "s1",
+      type: "notice",
+      level: "error",
+      message: "rate limit hit",
+    });
+    expect(provider.parseStreamLine(line)).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "error", message: "rate limit hit" },
+    ]);
+  });
+
+  it("parseStreamLine maps a failed effect to an error event with state.error.message", () => {
+    const provider = vibe("m");
+    const line = JSON.stringify({
+      sessionId: "s1",
+      type: "effect",
+      title: "file_system.bash",
+      detail: {
+        toolName: "file_system.bash",
+        display: { summary: "bash: rm -rf /" },
+        kind: "shell",
+        input: { command: "rm -rf /" },
+      },
+      state: {
+        status: "failed",
+        error: { code: "exec_failed", message: "exit 1" },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toStrictEqual([
+      { type: "session_id", sessionId: "s1" },
+      { type: "error", message: "exit 1" },
+    ]);
+  });
+
+  it("parseStreamLine drops reasoning/checkpoint/callback entries (session_id only)", () => {
+    const provider = vibe("m");
+    for (const type of ["reasoning", "checkpoint", "callback"]) {
+      expect(
+        provider.parseStreamLine(JSON.stringify({ sessionId: "s1", type })),
+      ).toStrictEqual([{ type: "session_id", sessionId: "s1" }]);
+    }
+  });
+
+  it("parseStreamLine returns [] for non-JSON lines and JSON without sessionId", () => {
+    const provider = vibe("m");
+    expect(provider.parseStreamLine("plain text")).toStrictEqual([]);
+    expect(provider.parseStreamLine("")).toStrictEqual([]);
+    expect(provider.parseStreamLine("{not json")).toStrictEqual([]);
+    expect(
+      provider.parseStreamLine(JSON.stringify({ type: "unknown" })),
+    ).toStrictEqual([]);
+  });
+
+  it("parseSessionUsage reads the LAST journal line with a usage object, codex-style buckets", () => {
+    const provider = vibe("m");
+    const content = [
+      JSON.stringify({
+        sequence: 1,
+        type: "action_result",
+        payload: {
+          usage: {
+            input_tokens: 1000,
+            cached_input_tokens: 200,
+            output_tokens: 10,
+          },
+        },
+      }),
+      JSON.stringify({ sequence: 2, type: "receipt_succeeded", payload: {} }),
+      JSON.stringify({
+        sequence: 3,
+        type: "action_result",
+        payload: {
+          usage: {
+            input_tokens: 8519,
+            cached_input_tokens: 8192,
+            cache_write_tokens: 300,
+            output_tokens: 41,
+          },
+        },
+      }),
+    ].join("\n");
+    expect(parseSessionUsage(provider, content)).toStrictEqual({
+      inputTokens: 8519 - 8192,
+      cacheCreationInputTokens: 300,
+      cacheReadInputTokens: 8192,
+      outputTokens: 41,
+    });
+  });
+
+  it("parseSessionUsage also accepts a top-level usage object and defaults missing cache fields to 0", () => {
+    const provider = vibe("m");
+    const content = JSON.stringify({
+      type: "usage",
+      usage: { input_tokens: 100, output_tokens: 5 },
+    });
+    expect(parseSessionUsage(provider, content)).toStrictEqual({
+      inputTokens: 100,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      outputTokens: 5,
+    });
+  });
+
+  it("parseSessionUsage returns undefined when no line carries usage", () => {
+    const provider = vibe("m");
+    expect(
+      parseSessionUsage(provider, JSON.stringify({ type: "x", payload: {} })),
+    ).toBeUndefined();
+    expect(parseSessionUsage(provider, "")).toBeUndefined();
+  });
+
+  it("parseSessionContextWindow is the last usage line's input_tokens, no limit", () => {
+    const provider = vibe("m");
+    assert.isDefined(provider.parseSessionContextWindow);
+    const content = [
+      JSON.stringify({
+        payload: { usage: { input_tokens: 100, output_tokens: 1 } },
+      }),
+      JSON.stringify({
+        payload: { usage: { input_tokens: 8519, output_tokens: 41 } },
+      }),
+    ].join("\n");
+    expect(provider.parseSessionContextWindow(content)).toStrictEqual({
+      tokens: 8519,
+    });
+    expect(
+      provider.parseSessionContextWindow(JSON.stringify({ payload: {} })),
+    ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vibe sessionStorage — dir-based capture/resume over a fake bind-mount handle
+// ---------------------------------------------------------------------------
+
+describe("vibe sessionStorage", () => {
+  /** Bind-mount handle backed by the host filesystem (sandbox path == host path). */
+  const fsBindMountHandle = (): BindMountSandboxHandle => ({
+    worktreePath: "/workspace",
+    exec: async (command, options) => {
+      const { exec } = await import("node:child_process");
+      return new Promise((resolve) => {
+        const child = exec(command, (err, stdout, stderr) => {
+          resolve({
+            stdout: stdout.toString(),
+            stderr: stderr.toString(),
+            exitCode: err && typeof err.code === "number" ? err.code : 0,
+          });
+        });
+        child.stdin?.end(options?.stdin);
+      });
+    },
+    copyFileIn: async (hostPath, sandboxPath) => {
+      const { copyFile } = await import("node:fs/promises");
+      await copyFile(hostPath, sandboxPath);
+    },
+    copyFileOut: async (sandboxPath, hostPath) => {
+      const { copyFile } = await import("node:fs/promises");
+      await copyFile(sandboxPath, hostPath);
+    },
+    close: async () => {},
+  });
+
+  const ID = "962f53da-75fc-63be-2437-7758f813def0";
+
+  /** A fake sandbox-side unified session dir. Returns its root. */
+  const makeSandboxSession = async (
+    root: string,
+    cwd: string,
+  ): Promise<string> => {
+    const dir = join(root, ID);
+    await mkdir(join(dir, "journal"), { recursive: true });
+    await mkdir(join(dir, "chunks"), { recursive: true });
+    await writeFile(
+      join(dir, "meta.json"),
+      JSON.stringify({
+        session_id: ID,
+        environment: { working_directory: cwd },
+        origin_directory: cwd,
+      }),
+    );
+    await writeFile(join(dir, "CURRENT"), '{"generation":8}');
+    await writeFile(
+      join(dir, "journal", "0000000000000001.jsonl"),
+      `${JSON.stringify({ sequence: 1, type: "core_input", payload: {} })}\n`,
+    );
+    await writeFile(
+      join(dir, "journal", "0000000000000002.jsonl"),
+      `${JSON.stringify({ sequence: 2, type: "action_result", payload: { usage: { input_tokens: 8519, cached_input_tokens: 8192, output_tokens: 41 } } })}\n`,
+    );
+    await writeFile(join(dir, "chunks", "abc123.json"), '{"chunk":true}');
+    return dir;
+  };
+
+  it("captureToHost moves the whole session dir, rewriting only meta.json's cwd fields", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    try {
+      await makeSandboxSession(sandboxDir, "/sandbox/repo");
+      const { sessionStorage } = vibe("mistral-medium-3.5", {
+        sessionStorage: {
+          hostSessionsDir: hostDir,
+          sandboxSessionsDir: sandboxDir,
+        },
+      });
+      await expect(sessionStorage.existsOnHost("/host/repo", ID)).resolves.toBe(
+        false,
+      );
+
+      await sessionStorage.captureToHost({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: fsBindMountHandle(),
+      });
+
+      const hostSessionDir = join(hostDir, ID);
+      expect(sessionStorage.hostSessionFilePath("/host/repo", ID)).toBe(
+        hostSessionDir,
+      );
+      await expect(sessionStorage.existsOnHost("/host/repo", ID)).resolves.toBe(
+        true,
+      );
+
+      const meta = JSON.parse(
+        await readFile(join(hostSessionDir, "meta.json"), "utf8"),
+      );
+      expect(meta.environment.working_directory).toBe("/host/repo");
+      expect(meta.origin_directory).toBe("/host/repo");
+      expect(meta.session_id).toBe(ID);
+      // Everything but meta.json is byte-for-byte.
+      expect(await readFile(join(hostSessionDir, "CURRENT"), "utf8")).toBe(
+        '{"generation":8}',
+      );
+      expect(
+        await readFile(join(hostSessionDir, "chunks", "abc123.json"), "utf8"),
+      ).toBe('{"chunk":true}');
+      expect(
+        await readFile(
+          join(hostSessionDir, "journal", "0000000000000001.jsonl"),
+          "utf8",
+        ),
+      ).toBe(
+        `${JSON.stringify({ sequence: 1, type: "core_input", payload: {} })}\n`,
+      );
+      await expect(sessionStorage.findByIdOnHost(ID)).resolves.toStrictEqual({
+        path: hostSessionDir,
+        searchedRoot: hostDir,
+      });
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+      await rm(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it("captureToHost fails loudly when the sandbox has no such session dir", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    try {
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostDir,
+          sandboxSessionsDir: sandboxDir,
+        },
+      });
+      await expect(
+        sessionStorage.captureToHost({
+          hostCwd: "/host/repo",
+          sandboxCwd: "/sandbox/repo",
+          sessionId: ID,
+          handle: fsBindMountHandle(),
+        }),
+      ).rejects.toThrow(/not found/u);
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+      await rm(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it("readHostSession returns the journal segments concatenated in sequence order", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    try {
+      const dir = join(hostDir, ID);
+      await mkdir(join(dir, "journal"), { recursive: true });
+      await writeFile(join(dir, "meta.json"), "{}");
+      await writeFile(
+        join(dir, "journal", "0000000000000002.jsonl"),
+        "second\n",
+      );
+      await writeFile(
+        join(dir, "journal", "0000000000000001.jsonl"),
+        "first\n",
+      );
+      await writeFile(join(dir, "journal", "notes.txt"), "not a segment\n");
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: { hostSessionsDir: hostDir },
+      });
+      await expect(
+        sessionStorage.readHostSession("/host/repo", ID),
+      ).resolves.toBe("first\n\nsecond\n");
+      await expect(
+        sessionStorage.readHostSession("/host/repo", "missing"),
+      ).resolves.toBeUndefined();
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeIntoSandbox copies the host dir into the sandbox with meta.json cwd rewritten host→sandbox", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    try {
+      await makeSandboxSession(hostDir, "/host/repo");
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostDir,
+          sandboxSessionsDir: sandboxDir,
+        },
+      });
+
+      await sessionStorage.resumeIntoSandbox({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: fsBindMountHandle(),
+      });
+
+      const sandboxSessionDir = join(sandboxDir, ID);
+      const meta = JSON.parse(
+        await readFile(join(sandboxSessionDir, "meta.json"), "utf8"),
+      );
+      expect(meta.environment.working_directory).toBe("/sandbox/repo");
+      expect(meta.origin_directory).toBe("/sandbox/repo");
+      expect(await readFile(join(sandboxSessionDir, "CURRENT"), "utf8")).toBe(
+        '{"generation":8}',
+      );
+      expect(
+        await readFile(
+          join(sandboxSessionDir, "journal", "0000000000000002.jsonl"),
+          "utf8",
+        ),
+      ).toContain('"input_tokens":8519');
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+      await rm(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeIntoSandbox fails with the searched root when the host session is missing", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    try {
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostDir,
+          sandboxSessionsDir: sandboxDir,
+        },
+      });
+      await expect(
+        sessionStorage.resumeIntoSandbox({
+          hostCwd: "/host/repo",
+          sandboxCwd: "/sandbox/repo",
+          sessionId: ID,
+          handle: fsBindMountHandle(),
+        }),
+      ).rejects.toThrow(/not found/u);
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+      await rm(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it("findByIdOnHost falls back to a meta.json scan when the dir name is not the id", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    try {
+      const dir = join(hostDir, "oddly-named");
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, "meta.json"),
+        JSON.stringify({ session_id: ID }),
+      );
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: { hostSessionsDir: hostDir },
+      });
+      await expect(sessionStorage.findByIdOnHost(ID)).resolves.toStrictEqual({
+        path: dir,
+        searchedRoot: hostDir,
+      });
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("the captured host session feeds parseSessionUsage/parseSessionContextWindow via readHostSession", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const sandboxDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbx-"));
+    try {
+      await makeSandboxSession(sandboxDir, "/sandbox/repo");
+      const provider = vibe("m", {
+        sessionStorage: {
+          hostSessionsDir: hostDir,
+          sandboxSessionsDir: sandboxDir,
+        },
+      });
+      await provider.sessionStorage.captureToHost({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: fsBindMountHandle(),
+      });
+      const content = await provider.sessionStorage.readHostSession(
+        "/host/repo",
+        ID,
+      );
+      assert.isDefined(content);
+      expect(parseSessionUsage(provider, content)).toStrictEqual({
+        inputTokens: 8519 - 8192,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 8192,
+        outputTokens: 41,
+      });
+      assert.isDefined(provider.parseSessionContextWindow);
+      expect(provider.parseSessionContextWindow(content)).toStrictEqual({
+        tokens: 8519,
+      });
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+      await rm(sandboxDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("vibe sessionStorage sandbox dirs", () => {
+  it("derives the default sandbox sessions dir from the handle's reported home", async () => {
+    const fsHandle = (): BindMountSandboxHandle => ({
+      worktreePath: "/workspace",
+      exec: async (command, options) => {
+        const { exec } = await import("node:child_process");
+        return new Promise((resolve) => {
+          const child = exec(command, (err, stdout, stderr) => {
+            resolve({
+              stdout: stdout.toString(),
+              stderr: stderr.toString(),
+              exitCode: err && typeof err.code === "number" ? err.code : 0,
+            });
+          });
+          child.stdin?.end(options?.stdin);
+        });
+      },
+      copyFileIn: async (hostPath, sandboxPath) => {
+        const { copyFile } = await import("node:fs/promises");
+        await copyFile(hostPath, sandboxPath);
+      },
+      copyFileOut: async (sandboxPath, hostPath) => {
+        const { copyFile } = await import("node:fs/promises");
+        await copyFile(sandboxPath, hostPath);
+      },
+      close: async () => {},
+    });
+    const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-vibe-host-"));
+    const home = await mkdtemp(join(tmpdir(), "sandcastle-vibe-sbxhome-"));
+    const ID = "962f53da-75fc-63be-2437-7758f813def0";
+    try {
+      const unified = join(home, ".vibe", "logs", "session", "unified");
+      await mkdir(join(unified, ID), { recursive: true });
+      await writeFile(
+        join(unified, ID, "meta.json"),
+        JSON.stringify({
+          session_id: ID,
+          environment: { working_directory: "/sandbox/repo" },
+        }),
+      );
+      const { sessionStorage } = vibe("m", {
+        sessionStorage: { hostSessionsDir: hostDir },
+      });
+      await sessionStorage.captureToHost({
+        hostCwd: "/host/repo",
+        sandboxCwd: "/sandbox/repo",
+        sessionId: ID,
+        handle: { ...fsHandle(), sandboxHomedir: home },
+      });
+      await expect(sessionStorage.existsOnHost("/host/repo", ID)).resolves.toBe(
+        true,
+      );
+      const meta = JSON.parse(
+        await readFile(join(hostDir, ID, "meta.json"), "utf8"),
+      );
+      expect(meta.environment.working_directory).toBe("/host/repo");
+    } finally {
+      await rm(hostDir, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

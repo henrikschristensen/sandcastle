@@ -2599,6 +2599,7 @@ const AGENT_AUTH_KEY: Record<string, string> = {
   // github-issues tracker declares GH_TOKEN (Issues scope), which would shadow
   // GITHUB_TOKEN, so only COPILOT_GITHUB_TOKEN reliably reaches Copilot.
   copilot: "COPILOT_GITHUB_TOKEN",
+  vibe: "MISTRAL_API_KEY",
 };
 
 const declaredKeys = (envExample: string): string[] =>

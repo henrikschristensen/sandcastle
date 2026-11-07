@@ -90,6 +90,12 @@ const AGENTS = [
     model: "claude-sonnet-4.5",
     installs: "@github/copilot",
   },
+  {
+    name: "vibe",
+    factory: "vibe",
+    model: "mistral-medium-3.5",
+    installs: "uv tool install mistral-vibe",
+  },
 ] as const;
 
 /** A fresh git repo; call the returned function to remove it. */
@@ -115,7 +121,7 @@ describe("sandcastle init --agent", () => {
 
     expect(result).toMatchObject({ exitCode: 1 });
     expect(result.output).toContain(
-      'Unknown agent "nonexistent". Available: claude-code, pi, codex, cursor, opencode, copilot',
+      'Unknown agent "nonexistent". Available: claude-code, pi, codex, cursor, opencode, copilot, vibe',
     );
   });
 

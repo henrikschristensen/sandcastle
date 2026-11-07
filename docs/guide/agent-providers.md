@@ -1,6 +1,6 @@
 # Agent providers
 
-Sandcastle ships [agent providers](./glossary.md#agent-provider) for Claude Code, Codex, Pi, Copilot, Cursor and OpenCode: `claudeCode()`, `codex()`, `pi()`, `copilot()`, `cursor()` and `opencode()`, all exported from `@ai-hero/sandcastle`. Each takes a model string and, optionally, provider-specific options:
+Sandcastle ships [agent providers](./glossary.md#agent-provider) for Claude Code, Codex, Pi, Copilot, Cursor, OpenCode and Mistral Vibe: `claudeCode()`, `codex()`, `pi()`, `copilot()`, `cursor()`, `opencode()` and `vibe()`, all exported from `@ai-hero/sandcastle`. Each takes a model string and, optionally, provider-specific options:
 
 ```typescript
 import { run, codex } from "@ai-hero/sandcastle";
@@ -58,6 +58,22 @@ agent: pi("claude-sonnet-4-6", { thinking: "high" });
 | `captureSessions` | `boolean`                                                                | `true`  | Capture pi session JSONL to host for `pi --session <id>` |
 
 Without `thinking`, Sandcastle passes no `--thinking` flag, and pi uses its own default (`medium`). Some models reject that default. With pi 0.73.1, `anthropic/claude-haiku-5-5` fails with a 400 (`"thinking.type.enabled" is not supported for this model`). For a model like that, pass `{ thinking: "off" }`.
+
+## `VibeOptions`
+
+The `vibe()` factory accepts an optional second argument for provider-specific options:
+
+```typescript
+agent: vibe("mistral-medium-3.5", { env: { MISTRAL_API_KEY: "sk-..." } });
+```
+
+| Option            | Type                                        | Default | Description                                                                                                         |
+| ----------------- | ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| `env`             | `Record<string, string>`                    | `{}`    | Environment variables injected by this agent provider, merged over the provider's headless defaults                 |
+| `captureSessions` | `boolean`                                   | `true`  | Capture the [agent](./glossary.md#agent)'s session directory to [host](./glossary.md#host) for `vibe --resume <id>` |
+| `sessionStorage`  | `{ hostSessionsDir?, sandboxSessionsDir? }` | —       | Override vibe's session directories (default `~/.vibe/logs/session/unified`) for tests or non-standard installs     |
+
+The provider injects `VIBE_ENABLE_TELEMETRY=false` and `VIBE_ENABLE_UPDATE_CHECKS=false` by default; `MISTRAL_API_KEY` stays yours to provide. In print mode the [prompt](./glossary.md#prompt) is piped to `vibe -p` over stdin, and `--auto-approve` is passed exactly when `run()` is given `dangerouslySkipPermissions`.
 
 ## Provider `env`
 

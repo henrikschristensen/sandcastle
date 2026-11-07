@@ -19,15 +19,15 @@ const second = await first.resume?.("Now implement the plan");
 
 ## Session capture
 
-After each resumable provider iteration, Sandcastle automatically captures the agent's session file from the [sandbox](./glossary.md#sandbox) to the [host](./glossary.md#host). Claude Code sessions are stored under `~/.claude/projects/<encoded-path>/<session-id>.jsonl`; Codex sessions are stored under `~/.codex/sessions/YYYY/MM/DD/rollout-*-<session-id>.jsonl`; Pi sessions are stored under `~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<session-id>.jsonl`; Copilot sessions are stored under `~/.copilot/session-state/<session-id>/events.jsonl`; Cursor chats are stored under `~/.cursor/chats/<md5-of-cwd>/<chat-id>/store.db` (an SQLite file, copied byte for byte). OpenCode keeps sessions in its SQLite database, so Sandcastle runs `opencode export <id>` in the sandbox and stores the JSON under `~/.local/share/opencode/sandcastle-sessions/<session-id>.json`. Any provider-specific `cwd` fields are rewritten to match the host repo root, so the provider's native resume command works.
+After each resumable provider iteration, Sandcastle automatically captures the agent's session file from the [sandbox](./glossary.md#sandbox) to the [host](./glossary.md#host). Claude Code sessions are stored under `~/.claude/projects/<encoded-path>/<session-id>.jsonl`; Codex sessions are stored under `~/.codex/sessions/YYYY/MM/DD/rollout-*-<session-id>.jsonl`; Pi sessions are stored under `~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<session-id>.jsonl`; Copilot sessions are stored under `~/.copilot/session-state/<session-id>/events.jsonl`; Cursor chats are stored under `~/.cursor/chats/<md5-of-cwd>/<chat-id>/store.db` (an SQLite file, copied byte for byte). OpenCode keeps sessions in its SQLite database, so Sandcastle runs `opencode export <id>` in the sandbox and stores the JSON under `~/.local/share/opencode/sandcastle-sessions/<session-id>.json`. Vibe sessions are stored under `~/.vibe/logs/session/unified/<session-id>/` — a whole directory (its `meta.json` plus the journal and content chunks), moved file by file. Any provider-specific `cwd` fields are rewritten to match the host repo root, so the provider's native resume command works: for Vibe that is the `environment.working_directory` and `origin_directory` fields in `meta.json`, because a resumed Vibe run re-roots into its recorded working directory.
 
 For Claude Code, any `Agent`-tool or `Workflow`-tool subagent transcripts written under `<session-id>/subagents/agent-*.jsonl` are captured alongside the main session. Subagent capture is best-effort: a failure on an individual transcript logs a warning and lets siblings and the main session through. Main-session capture failure still fails the run (see below).
 
-Session capture is enabled by default for `claudeCode()`, `codex()`, `pi()`, `copilot()`, `cursor()`, and `opencode()` and can be opted out via `captureSessions: false`. Providers without `sessionStorage` do not attempt capture. Capture failure fails the run.
+Session capture is enabled by default for `claudeCode()`, `codex()`, `pi()`, `copilot()`, `cursor()`, `opencode()`, and `vibe()` and can be opted out via `captureSessions: false`. Providers without `sessionStorage` do not attempt capture. Capture failure fails the run. Vibe's token usage and context-window figures are read from the captured session journal, so with `captureSessions: false` they are not shown either.
 
 ## Session resume
 
-Pass `resumeSession` to `run()` to continue a prior Claude Code, Codex, Pi, Copilot, Cursor, or OpenCode conversation inside a new sandbox:
+Pass `resumeSession` to `run()` to continue a prior Claude Code, Codex, Pi, Copilot, Cursor, OpenCode, or Vibe conversation inside a new sandbox:
 
 ```typescript
 const result = await run({
@@ -60,8 +60,9 @@ const second = await first.resume?.("Now implement the plan");
 | `opencode`                                     | `opencode run --session <id>` | `opencode run --session <id> --fork`  |
 | `copilot`                                      | `copilot --resume=<id>`       | No: throws `ForkNotSupportedError`    |
 | `cursor`                                       | `agent --resume=<id>`         | No: throws `ForkNotSupportedError`    |
+| `vibe`                                         | `vibe --resume <id>`          | No: throws `ForkNotSupportedError`    |
 
-Before the sandbox starts, Sandcastle validates that the session file exists on the host and transfers it into the sandbox with `cwd` fields rewritten to match the sandbox-side path. Claude Code receives `--resume <id>`; Codex receives `codex exec resume <id>` with the [prompt](./glossary.md#prompt) piped over stdin; Pi receives `--session <id>`; Copilot and Cursor receive `--resume=<id>`. OpenCode's session is first loaded with `opencode import`, then OpenCode receives `--session <id>`.
+Before the sandbox starts, Sandcastle validates that the session file exists on the host and transfers it into the sandbox with `cwd` fields rewritten to match the sandbox-side path. Claude Code receives `--resume <id>`; Codex receives `codex exec resume <id>` with the [prompt](./glossary.md#prompt) piped over stdin; Pi receives `--session <id>`; Copilot and Cursor receive `--resume=<id>`; Vibe receives `--resume <id>` with the prompt piped over stdin. OpenCode's session is first loaded with `opencode import`, then OpenCode receives `--session <id>`.
 
 Constraints:
 
@@ -96,7 +97,7 @@ const [reviewA, reviewB] = await Promise.all([
 
 **Fork is session-only.** `--fork-session` and `codex exec fork` isolate the agent session JSONL — they do **not** isolate the branch, [worktree](./glossary.md#worktree), or sandbox. Safe concurrent fan-out (`Promise.all([r.fork(a), r.fork(b)])`) requires the caller to give each child a distinct `branch` via `branchStrategy: { type: "branch", branch: "..." }`. The default `head` and `merge-to-head` strategies are **not** safe for concurrent forks: `head` shares the host working directory across all children, and `merge-to-head` races `git merge` against the same HEAD.
 
-`fork` is present only on results from providers with `sessionStorage` — hence the optional-chaining call. The same single-iteration and session-file constraints as `.resume()` apply. A provider whose CLI resumes but has no fork flag (Copilot, Cursor) throws a `ForkNotSupportedError` naming it before any sandbox starts; match it on `error._tag === "ForkNotSupportedError"` and call `.resume()` instead.
+`fork` is present only on results from providers with `sessionStorage` — hence the optional-chaining call. The same single-iteration and session-file constraints as `.resume()` apply. A provider whose CLI resumes but has no fork flag (Copilot, Cursor, Vibe) throws a `ForkNotSupportedError` naming it before any sandbox starts; match it on `error._tag === "ForkNotSupportedError"` and call `.resume()` instead.
 
 ## Related terms
 

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -13,8 +13,10 @@ import {
   findClaudeSessionOnHost,
   findCodexSessionOnHost,
   findPiSessionOnHost,
+  findVibeSessionOnHost,
   homeDir,
   listClaudeSubagentSessionsInSandbox,
+  listFilesRecursive,
   locateSandboxSessionFile,
   makeSessionFileStorage,
   opencodeHostDatabase,
@@ -27,6 +29,9 @@ import {
   transferCodexSession,
   transferCopilotSession,
   transferPiSession,
+  transferVibeMetaJson,
+  vibeHostSessionsDir,
+  vibeSandboxSessionsDir,
 } from "./SessionStore.js";
 import type { HostSessionLookup } from "./SessionStore.js";
 import type { BindMountSandboxHandle } from "./SandboxProvider.js";
@@ -1837,5 +1842,366 @@ export const claudeCode = (
 
   parseSessionUsage(content: string): IterationUsage | undefined {
     return parseClaudeSessionUsage(content);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Mistral Vibe CLI agent provider
+// ---------------------------------------------------------------------------
+
+/** A parsed JSON value that is an object, so its fields can be read. */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/** `value[key]` when `value` is an object. */
+const recordField = (value: unknown, key: string): unknown =>
+  isRecord(value) ? value[key] : undefined;
+
+/** `value[key]` when it is a string. */
+const stringField = (value: unknown, key: string): string | undefined => {
+  const field = recordField(value, key);
+  return typeof field === "string" ? field : undefined;
+};
+
+/**
+ * Vibe tool names (after stripping the unified harness's `file_system.`
+ * prefix) mapped to the shared allowlist's canonical display names.
+ */
+const VIBE_TOOL_NAMES: Record<string, string> = {
+  bash: "Bash",
+  web_search: "WebSearch",
+  web_fetch: "WebFetch",
+  subagent: "Agent",
+  skill: "Skill",
+};
+
+/** Display-arg fields to try, in order, on an effect detail's `input`. */
+const VIBE_TOOL_ARG_FIELDS: Record<string, readonly string[]> = {
+  Bash: ["command"],
+  WebSearch: ["query"],
+  WebFetch: ["url"],
+  Agent: ["agent_name", "description"],
+  Skill: ["skill", "name"],
+};
+
+/**
+ * Parse one line of `vibe -p --output streaming` NDJSON — one whole camelCase
+ * history entry per line (a `PublicHistoryEntry`). Mapping (vibe 3.0.4):
+ *
+ * - `sessionId` on any entry → `session_id` (constant per run; last wins).
+ * - `message`/`role=="assistant"` → `text` + `result` (text blocks joined
+ *   `"\n\n"`); `outcome.type=="discarded"` entries are skipped.
+ * - `effect` → `tool_call` for the allowlisted tools only, with the
+ *   `file_system.` prefix stripped and the arg taken from the kind's input
+ *   field (`shell` → `input.command`, `web_search` → `input.query`,
+ *   `web_fetch` → `input.url`, `subagent` → `input.agent_name`, `skill` →
+ *   skill name), falling back to `display.summary`. A `failed` state →
+ *   `error` with `state.error.message`.
+ * - `notice` with `level=="error"` → `error` with its `message`.
+ *
+ * `reasoning`/`checkpoint`/`callback` entries carry no displayable content.
+ * No `usage`/`context_window` exists on the stream — both come from the
+ * captured session journal (see parseVibeSessionUsage).
+ */
+const parseVibeStreamLine = (line: string): ParsedStreamEvent[] => {
+  if (!line.startsWith("{")) return [];
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const events: ParsedStreamEvent[] = [];
+  const sessionId = stringField(obj, "sessionId");
+  if (sessionId !== undefined) {
+    events.push({ type: "session_id", sessionId });
+  }
+
+  if (obj.type === "message" && obj.role === "assistant") {
+    if (recordField(obj.outcome, "type") === "discarded") {
+      return events;
+    }
+    const content = Array.isArray(obj.content) ? obj.content : [];
+    const text = content
+      .filter((block) => recordField(block, "type") === "text")
+      .map((block) => stringField(block, "text") ?? "")
+      .filter((part) => part !== "")
+      .join("\n\n");
+    if (text !== "") {
+      events.push({ type: "text", text }, { type: "result", result: text });
+    }
+    return events;
+  }
+
+  if (obj.type === "effect") {
+    if (recordField(obj.state, "status") === "failed") {
+      const message =
+        stringField(recordField(obj.state, "error"), "message") ??
+        stringField(obj, "title") ??
+        "vibe tool call failed";
+      events.push({ type: "error", message });
+      return events;
+    }
+    const rawName = stringField(obj.detail, "toolName");
+    if (rawName === undefined) return events;
+    const name =
+      VIBE_TOOL_NAMES[rawName.replace(/^file_system\./u, "").toLowerCase()];
+    if (name === undefined) return events; // not allowlisted
+    let args: string | undefined;
+    for (const field of VIBE_TOOL_ARG_FIELDS[name] ?? []) {
+      const value = stringField(recordField(obj.detail, "input"), field);
+      if (value !== undefined) {
+        args = value;
+        break;
+      }
+    }
+    args ??= stringField(recordField(obj.detail, "display"), "summary");
+    if (args !== undefined) {
+      events.push({ type: "tool_call", name, args });
+    }
+    return events;
+  }
+
+  if (obj.type === "notice" && recordField(obj, "level") === "error") {
+    const message = stringField(obj, "message");
+    if (message !== undefined) {
+      events.push({ type: "error", message });
+    }
+    return events;
+  }
+
+  return events;
+};
+
+/**
+ * The `usage` object on the last line of the concatenated session journal
+ * that carries one. Journal records are `{sequence, type, payload, …}`, and
+ * the usage rides either a top-level `usage` or `payload.usage`.
+ */
+const lastVibeJournalUsage = (
+  content: string,
+): Record<string, unknown> | undefined => {
+  const lines = content.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (!line.startsWith("{")) continue;
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      const usage = isRecord(obj.usage)
+        ? obj.usage
+        : recordField(obj.payload, "usage");
+      if (isRecord(usage)) {
+        return usage;
+      }
+    } catch {
+      // Not valid JSON — skip
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Token usage from the captured vibe session: the LAST journal line with a
+ * `usage` object is the last model call. Mapped codex-style — `input_tokens`
+ * already includes the cached subset, so `inputTokens` is the remainder and
+ * `cached_input_tokens` maps to `cacheReadInputTokens` (no double counting).
+ */
+const parseVibeSessionUsage = (content: string): IterationUsage | undefined => {
+  const u = lastVibeJournalUsage(content);
+  if (u === undefined) return undefined;
+  if (
+    typeof u.input_tokens !== "number" ||
+    typeof u.output_tokens !== "number"
+  ) {
+    return undefined;
+  }
+  const cached =
+    typeof u.cached_input_tokens === "number" ? u.cached_input_tokens : 0;
+  return {
+    inputTokens: u.input_tokens - cached,
+    cacheCreationInputTokens:
+      typeof u.cache_write_tokens === "number" ? u.cache_write_tokens : 0,
+    cacheReadInputTokens: cached,
+    outputTokens: u.output_tokens,
+  };
+};
+
+/**
+ * The last model call's context window from the captured session: the input
+ * side of the last usage-bearing journal line, cache included (ADR 0023 —
+ * one model call, never summed; no `limit`, vibe reports none).
+ */
+const parseVibeSessionContextWindow = (
+  content: string,
+): ContextWindow | undefined => {
+  const tokens = lastVibeJournalUsage(content)?.input_tokens;
+  return typeof tokens === "number" && tokens > 0 ? { tokens } : undefined;
+};
+
+/** The one session file whose cwd fields move on transfer; all others copy verbatim. */
+const VIBE_META_JSON = "meta.json";
+
+/** Journal segment names are 16-digit zero-padded sequence numbers. */
+const VIBE_JOURNAL_FILE = /^[0-9]{16}\.jsonl$/u;
+
+/**
+ * Vibe's session is a whole directory (`unified/<id>/`: `meta.json`,
+ * hash-chained `journal/*.jsonl`, content-addressed `chunks/`, …), so it
+ * moves file-by-file through the handle's exec + single-file copy primitives
+ * rather than `makeSessionFileStorage`. Only `meta.json` is rewritten (cwd
+ * fields, sandbox-cwd ↔ host-cwd) — the journal references the chunks, so a
+ * partial copy would corrupt resume. Child subagent dirs (`child-*`) are not
+ * captured. The CLI resumes (`--resume <id>`) but has no print-mode fork, so
+ * the provider declares `canFork: false` (ADR 0021).
+ */
+const makeVibeSessionStorage = (options?: VibeOptions): AgentSessionStorage => {
+  const hostRoot =
+    options?.sessionStorage?.hostSessionsDir ?? vibeHostSessionsDir();
+  const sandboxRootOf = (handle: BindMountSandboxHandle): string =>
+    options?.sessionStorage?.sandboxSessionsDir ??
+    vibeSandboxSessionsDir(sandboxDirsOf(handle));
+
+  return {
+    canFork: false,
+    hostSessionFilePath: (_cwd, id) => join(hostRoot, id),
+    existsOnHost: (_cwd, id) => pathExists(join(hostRoot, id)),
+    readHostSession: async (_cwd, id) => {
+      const dir = join(hostRoot, id);
+      if (!(await pathExists(dir))) return undefined;
+      // The concatenated journal, in sequence order (zero-padded names sort
+      // lexicographically), is what parseSessionUsage/parseSessionContextWindow read.
+      const journalDir = join(dir, "journal");
+      const segments = (await listFilesRecursive(journalDir))
+        .filter((path) => VIBE_JOURNAL_FILE.test(posix.basename(path)))
+        .sort();
+      const parts: string[] = [];
+      for (const segment of segments) {
+        parts.push(await readFile(segment, "utf8"));
+      }
+      return parts.join("\n");
+    },
+    captureToHost: async ({ hostCwd, sandboxCwd, sessionId, handle }) => {
+      const sandboxDir = posix.join(sandboxRootOf(handle), sessionId);
+      const hostDir = join(hostRoot, sessionId);
+      const result = await handle.exec(
+        `find ${JSON.stringify(sandboxDir)} -type f`,
+      );
+      const stdout = result.stdout.trim();
+      const files = stdout === "" ? [] : stdout.split("\n");
+      if (result.exitCode !== 0 || files.length === 0) {
+        throw new Error(`vibe session ${sessionId} not found in ${sandboxDir}`);
+      }
+      for (const file of files) {
+        const rel = posix.relative(sandboxDir, file);
+        const dest = join(hostDir, rel);
+        await mkdir(dirname(dest), { recursive: true });
+        if (rel === VIBE_META_JSON) {
+          const content = await readSandboxFile(handle, file, "vibe-cap");
+          await writeFile(
+            dest,
+            transferVibeMetaJson(content, sandboxCwd, hostCwd),
+          );
+        } else {
+          await handle.copyFileOut(file, dest);
+        }
+      }
+    },
+    resumeIntoSandbox: async ({ hostCwd, sandboxCwd, sessionId, handle }) => {
+      const found = await findVibeSessionOnHost(sessionId, hostRoot);
+      const hostDir = requireHostSessionPath(found, sessionId);
+      const sandboxDir = posix.join(sandboxRootOf(handle), sessionId);
+      for (const file of await listFilesRecursive(hostDir)) {
+        const rel = relative(hostDir, file).split(/[\\/]/u).join("/");
+        const dest = posix.join(sandboxDir, rel);
+        if (rel === VIBE_META_JSON) {
+          const content = await readFile(file, "utf8");
+          await writeSandboxFile(handle, {
+            sandboxPath: dest,
+            content: transferVibeMetaJson(content, hostCwd, sandboxCwd),
+            tag: "vibe-res",
+          });
+        } else {
+          await handle.exec(`mkdir -p ${JSON.stringify(posix.dirname(dest))}`);
+          await handle.copyFileIn(file, dest);
+        }
+      }
+    },
+    findByIdOnHost: (id) => findVibeSessionOnHost(id, hostRoot),
+  };
+};
+
+/** Options for the Mistral Vibe CLI agent provider. */
+export interface VibeOptions {
+  /**
+   * Environment variables injected by this agent provider. Merged over the
+   * provider's own headless defaults (`VIBE_ENABLE_TELEMETRY=false`,
+   * `VIBE_ENABLE_UPDATE_CHECKS=false`). `MISTRAL_API_KEY` stays the caller's.
+   */
+  readonly env?: Record<string, string>;
+  /** When false, session capture is disabled. Default: true. */
+  readonly captureSessions?: boolean;
+  /** Override vibe session directories for tests or non-standard installs. */
+  readonly sessionStorage?: {
+    readonly hostSessionsDir?: string;
+    readonly sandboxSessionsDir?: string;
+  };
+}
+
+export const vibe = (
+  model: string,
+  options?: VibeOptions,
+): AgentProvider & { readonly sessionStorage: AgentSessionStorage } => ({
+  name: "vibe",
+  env: {
+    VIBE_ENABLE_TELEMETRY: "false",
+    VIBE_ENABLE_UPDATE_CHECKS: "false",
+    ...options?.env,
+  },
+  captureSessions: options?.captureSessions ?? true,
+  sessionStorage: makeVibeSessionStorage(options),
+
+  buildPrintCommand({
+    prompt,
+    dangerouslySkipPermissions,
+    resumeSession,
+    forkSession,
+  }: AgentCommandOptions): PrintCommand {
+    if (resumeSession !== undefined && forkSession === true) {
+      throw new ForkNotSupportedError({
+        message:
+          "vibe cannot fork a session: its CLI resumes but has no fork in print mode. Use resume() to continue the session in place.",
+        agentProvider: "vibe",
+      });
+    }
+    // Bare `-p` reads the prompt from stdin, dodging the argv size limit.
+    // Headless vibe denies approval-needing tool calls while still exiting 0,
+    // so `--auto-approve` is passed exactly when permissions are skipped.
+    const autoApprove = dangerouslySkipPermissions ? " --auto-approve" : "";
+    const resumeFlag =
+      resumeSession === undefined
+        ? ""
+        : ` --resume ${shellEscape(resumeSession)}`;
+    return {
+      command: `vibe -p --output streaming --model ${shellEscape(model)}${autoApprove}${resumeFlag}`,
+      stdin: prompt,
+    };
+  },
+
+  buildInteractiveArgs({ prompt }: AgentCommandOptions): string[] {
+    const args = ["vibe", "--model", model];
+    if (prompt) args.push(prompt);
+    return args;
+  },
+
+  parseStreamLine(line: string): ParsedStreamEvent[] {
+    return parseVibeStreamLine(line);
+  },
+
+  parseSessionUsage(content: string): IterationUsage | undefined {
+    return parseVibeSessionUsage(content);
+  },
+
+  parseSessionContextWindow(content: string): ContextWindow | undefined {
+    return parseVibeSessionContextWindow(content);
   },
 });
