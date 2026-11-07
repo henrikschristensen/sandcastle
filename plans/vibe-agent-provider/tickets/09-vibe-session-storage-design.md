@@ -1,8 +1,8 @@
 ---
 title: "Session storage design: host-sandbox capture/resume, cwd rewrite, layout helpers"
 type: grilling
-state: open
-assignee: ""
+state: closed
+assignee: henrikschristensen
 blocked_by: [03-vibe-session-storage, 05-vibe-roundtrip-empirical]
 ---
 
@@ -18,3 +18,12 @@ How does the `sessionStorage` sub-object for vibe implement `AgentSessionStorage
 - `sessionStorage` option overrides on `VibeOptions` (host/sandbox dirs), matching other providers.
 
 Consult `/grilling` + `/domain-modeling`. Record the full design in `## Resolution`.
+
+## Resolution
+
+Locked via grilling with the user (2026-11-07):
+
+1. **Host store:** mirror vibe's own host layout — `<hostRoot>/<id>/` where hostRoot defaults to `~/.vibe/logs/session/unified` (overridable via `VibeOptions.sessionStorage.hostSessionsDir`). Dir name == full session UUID, so paths are id-derivable, cwd ignored (Copilot-style). Bonus: the user can `vibe --resume <id>` captured sessions on the host directly.
+2. **Capture scope:** the WHOLE main session dir `unified/<id>/` moves verbatim (journal references content-addressed chunks — partial copies corrupt resume). Child subagent dirs (`child-<hex>` siblings) are NOT captured (graduated out of fog; can be added later like claude's best-effort subagent capture).
+3. **cwd rewrite:** only `meta.json` is rewritten — `environment.working_directory` and `origin_directory`, sandbox-cwd ↔ host-cwd, via a new pure string fn `transferVibeMetaJson(json, fromCwd, toCwd)` in SessionStore.ts (mirrors `transferClaudeSession`). Journal/chunks/generations/CURRENT copy byte-for-byte. On resume the reverse rewrite makes the session re-root into the sandbox cwd (ticket 05: resume re-roots to the recorded working_directory).
+4. **Mechanics & method semantics:** custom dir-based `AgentSessionStorage` (like `makeClaudeSessionStorage`, NOT file-based `makeSessionFileStorage`). The handle has only single-file copy + exec, so a dir moves by `exec("find <dir> -type f")` + `copyFileOut` per file (capture), and `copyFileIn` + `mkdir -p` per file (resume). Sandbox side default: `<sandboxHome>/.vibe/logs/session/unified/<id>/` (overridable via `sandboxSessionsDir`). `hostSessionFilePath` → `<hostRoot>/<id>` (the dir); `existsOnHost` → dir exists; `readHostSession` → concatenated `journal/*.jsonl` in sequence order (ticket 08 contract); `findByIdOnHost` → `<root>/<id>` dir match first, then scan subdirs' `meta.json` `session_id` fallback.
