@@ -94,7 +94,7 @@ const AGENTS = [
     name: "vibe",
     factory: "vibe",
     model: "mistral-medium-3.5",
-    installs: "uv tool install mistral-vibe",
+    installs: "uv tool install --python 3.12 mistral-vibe",
   },
 ] as const;
 
