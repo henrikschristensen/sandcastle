@@ -1966,9 +1966,28 @@ const parseVibeStreamLine = (line: string): ParsedStreamEvent[] => {
 };
 
 /**
+ * The first `usage` object found in a parsed journal record: at the top
+ * level, under `payload`, or under `payload.result` (where vibe 3.x puts the
+ * model call's usage on an `action_result` record), with a bounded deep
+ * search as a fallback for future nestings.
+ */
+const findVibeUsage = (
+  value: unknown,
+  depth = 0,
+): Record<string, unknown> | undefined => {
+  if (depth > 6 || !isRecord(value)) return undefined;
+  if (isRecord(value.usage)) return value.usage;
+  for (const key of Object.keys(value)) {
+    if (key === "usage") continue;
+    const found = findVibeUsage(value[key], depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+/**
  * The `usage` object on the last line of the concatenated session journal
- * that carries one. Journal records are `{sequence, type, payload, …}`, and
- * the usage rides either a top-level `usage` or `payload.usage`.
+ * that carries one. Journal records are `{sequence, type, payload, …}`.
  */
 const lastVibeJournalUsage = (
   content: string,
@@ -1978,11 +1997,8 @@ const lastVibeJournalUsage = (
     const line = lines[i]!;
     if (!line.startsWith("{")) continue;
     try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
-      const usage = isRecord(obj.usage)
-        ? obj.usage
-        : recordField(obj.payload, "usage");
-      if (isRecord(usage)) {
+      const usage = findVibeUsage(JSON.parse(line));
+      if (usage !== undefined) {
         return usage;
       }
     } catch {
@@ -2173,8 +2189,12 @@ export const vibe = (
       resumeSession === undefined
         ? ""
         : ` --resume ${shellEscape(resumeSession)}`;
+    // vibe rejects `--model` combined with `--resume` ("--model only applies
+    // to a new session"), so a resumed run keeps the session's own model.
+    const modelFlag =
+      resumeSession === undefined ? ` --model ${shellEscape(model)}` : "";
     return {
-      command: `vibe -p --output streaming --model ${shellEscape(model)}${autoApprove}${resumeFlag}`,
+      command: `vibe -p --output streaming${modelFlag}${autoApprove}${resumeFlag}`,
       stdin: prompt,
     };
   },

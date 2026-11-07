@@ -3497,26 +3497,30 @@ describe("vibe factory", () => {
     expect(stdin).toBe("hi");
   });
 
-  it("buildPrintCommand appends --resume <id> (shell-escaped) when resuming", () => {
+  it("buildPrintCommand appends --resume <id> (shell-escaped) when resuming, and drops --model (vibe rejects the combination)", () => {
     const provider = vibe("mistral-medium-3.5");
     const { command, stdin } = provider.buildPrintCommand({
       ...opts("follow up"),
       resumeSession: "962f53da-75fc-63be-2437-7758f813def0",
     });
     expect(command).toBe(
-      "vibe -p --output streaming --model 'mistral-medium-3.5' --auto-approve --resume '962f53da-75fc-63be-2437-7758f813def0'",
+      "vibe -p --output streaming --auto-approve --resume '962f53da-75fc-63be-2437-7758f813def0'",
     );
+    expect(command).not.toContain("--model");
     expect(stdin).toBe("follow up");
   });
 
   it("buildPrintCommand shell-escapes the model and resume id", () => {
     const provider = vibe("it's a model");
-    const { command } = provider.buildPrintCommand({
+    const fresh = provider.buildPrintCommand(opts("x"));
+    expect(fresh.command).toContain(String.raw`--model 'it'\''s a model'`);
+    const resumed = provider.buildPrintCommand({
       ...opts("x"),
       resumeSession: "id'with'quotes",
     });
-    expect(command).toContain(String.raw`--model 'it'\''s a model'`);
-    expect(command).toContain(String.raw`--resume 'id'\''with'\''quotes'`);
+    expect(resumed.command).toContain(
+      String.raw`--resume 'id'\''with'\''quotes'`,
+    );
   });
 
   it("buildPrintCommand throws ForkNotSupportedError naming vibe when asked to resume+fork", () => {
@@ -3792,6 +3796,44 @@ describe("vibe factory", () => {
       cacheCreationInputTokens: 300,
       cacheReadInputTokens: 8192,
       outputTokens: 41,
+    });
+  });
+
+  it("parseSessionUsage finds usage nested at payload.result.usage (vibe 3.x action_result records)", () => {
+    const provider = vibe("m");
+    const content = [
+      JSON.stringify({
+        sequence: 1,
+        type: "action_result",
+        payload: { action_id: "a1", result: { output: "ok" } },
+      }),
+      JSON.stringify({
+        sequence: 2,
+        type: "action_result",
+        payload: {
+          action_id: "a2",
+          result: {
+            output: "done",
+            usage: {
+              cache_write_tokens: 0,
+              cached_input_tokens: 8064,
+              input_tokens: 8422,
+              output_tokens: 28,
+            },
+          },
+          state: "succeeded",
+        },
+      }),
+    ].join("\n");
+    expect(parseSessionUsage(provider, content)).toStrictEqual({
+      inputTokens: 8422 - 8064,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 8064,
+      outputTokens: 28,
+    });
+    assert.isDefined(provider.parseSessionContextWindow);
+    expect(provider.parseSessionContextWindow(content)).toStrictEqual({
+      tokens: 8422,
     });
   });
 
