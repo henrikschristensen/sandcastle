@@ -17,7 +17,8 @@ export type Agent =
   | "codex"
   | "cursor"
   | "opencode"
-  | "copilot";
+  | "copilot"
+  | "vibe";
 export const AGENTS: readonly Agent[] = [
   "claudeCode",
   "pi",
@@ -25,6 +26,7 @@ export const AGENTS: readonly Agent[] = [
   "cursor",
   "opencode",
   "copilot",
+  "vibe",
 ];
 
 /** Sandboxes a world may run. noSandbox is left out on purpose: it runs the
@@ -61,6 +63,7 @@ const CHEAP_MODELS: Record<Agent, string> = {
   cursor: "composer-2", // init's default; cheapest id unconfirmed
   opencode: "opencode/big-pickle", // free on OpenCode Zen
   copilot: "claude-haiku-4.5", // 0.33x premium requests
+  vibe: "mistral-medium-3.5", // vibe's default alias, hardcoded in the CLI
 };
 
 /**
@@ -97,6 +100,7 @@ export const INIT_AGENT: Record<Agent, string> = {
   cursor: "cursor",
   opencode: "opencode",
   copilot: "copilot",
+  vibe: "vibe",
 };
 
 /** Keys each agent needs; any one of a group's alternatives is enough. */
@@ -108,6 +112,7 @@ export const AGENT_KEYS: Record<Agent, readonly (readonly string[])[]> = {
   opencode: [["OPENCODE_API_KEY"]],
   // GH_TOKEN is usually the issue tracker's PAT; copilot needs "Copilot Requests".
   copilot: [["COPILOT_GITHUB_TOKEN"]],
+  vibe: [["MISTRAL_API_KEY"]],
 };
 
 /** What each sandbox needs on this machine: keys, or a working command. */
