@@ -2065,7 +2065,12 @@ const vibePluginsDirOf = (sessionsDir: string, isHost: boolean): string =>
     ? join(dirname(sessionsDir), "plugins")
     : posix.join(posix.dirname(sessionsDir), "plugins");
 
-/** Copy every file under a sandbox dir to a host dir; returns false when the source is absent. */
+/**
+ * Copy every file under a sandbox dir to a host dir; returns false when the
+ * source is absent. With `bestEffort`, a file that fails to copy is logged and
+ * skipped instead of aborting the tree (the plugins tree: the session capture
+ * is what must succeed, a partial plugin tree only weakens resume).
+ */
 const captureVibeDir = async ({
   handle,
   sourceDir,
@@ -2073,6 +2078,7 @@ const captureVibeDir = async ({
   fromCwd,
   toCwd,
   tag,
+  bestEffort = false,
 }: {
   handle: BindMountSandboxHandle;
   sourceDir: string;
@@ -2080,11 +2086,13 @@ const captureVibeDir = async ({
   fromCwd: string;
   toCwd: string;
   tag: string;
+  bestEffort?: boolean;
 }): Promise<boolean> => {
   // Native sandboxes run the agent in a user namespace, so files it writes
-  // with restrictive modes (vibe's plugin manifests are 0600) are unreadable
-  // to the host process doing the copy. Make the tree world-readable first;
-  // best-effort, the copy below reports the real failure if this didn't help.
+  // with restrictive modes (vibe's plugin manifests are 0600) can be
+  // unreadable to the host process doing the copy. Make the tree
+  // world-readable first; best-effort, the copy below reports the real
+  // failure if this didn't help.
   await handle
     .exec(`chmod -R a+rX ${JSON.stringify(sourceDir)} 2>/dev/null || true`)
     .catch(() => undefined);
@@ -2096,12 +2104,21 @@ const captureVibeDir = async ({
   for (const file of stdout.split("\n")) {
     const rel = posix.relative(sourceDir, file);
     const dest = join(destDir, rel);
-    await mkdir(dirname(dest), { recursive: true });
-    if (rel === VIBE_META_JSON) {
-      const content = await readSandboxFile(handle, file, tag);
-      await writeFile(dest, transferVibeMetaJson(content, fromCwd, toCwd));
-    } else {
-      await handle.copyFileOut(file, dest);
+    try {
+      await mkdir(dirname(dest), { recursive: true });
+      if (rel === VIBE_META_JSON) {
+        const content = await readSandboxFile(handle, file, tag);
+        await writeFile(dest, transferVibeMetaJson(content, fromCwd, toCwd));
+      } else {
+        await handle.copyFileOut(file, dest);
+      }
+    } catch (error) {
+      if (!bestEffort) throw error;
+      console.error(
+        `sandcastle: failed to capture ${file}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
   return true;
@@ -2202,6 +2219,7 @@ const makeVibeSessionStorage = (options?: VibeOptions): AgentSessionStorage => {
           fromCwd: sandboxCwd,
           toCwd: hostCwd,
           tag: "vibe-plugins",
+          bestEffort: true,
         });
       } catch (error) {
         console.error(
