@@ -33,13 +33,13 @@ A fully decided, plan-only implementation spec for adding **Gitea issues** — C
 - [Research: Codeberg.org token creation, scopes, and Gitea specifics the scaffold depends on](tickets/03-codeberg-token-scopes.md) — Codeberg runs Forgejo 17 (Gitea-compatible). API base `https://codeberg.org/api/v1`. Token: profile → Settings → Applications → New access token, **minimum scopes `read:issue` + `write:issue`** for list/view-with-comments/close-with-comment; token shown once; repo-access selector available. Labels filter server-side (`?labels=…`). No published numeric quota — fair use with 429 rate limiting (10-min windows). Proposed `.env.example` comment text is §8 of the doc. Findings: `research/codeberg-token-scopes.md`.
 - [Decide: host, repo and auth wiring (.env.example vars + git-repo resolution)](tickets/04-host-repo-auth-wiring.md) — Locked: `.env.example` ships `GITEA_INSTANCE_URL=https://codeberg.org` + `GITEA_TOKEN=` (tea's runtime env login; in-memory, version check auto-off; no `tea login add` step). Repo is resolved by **tea's native git-remote auto-detection** — no shell expression in the command strings; `-r owner/repo` is the documented override. `GITEA_INSTANCE_URL` is authoritative when the remote host differs. Native providers get an `envNotes` line mirroring github-issues (put `GITEA_TOKEN` in `.sandcastle/.env`).
 - [Decide: exact LIST/VIEW/CLOSE command strings for the gitea entry](tickets/05-list-view-close-commands.md) — Locked: LIST `tea issues list --state open --labels Sandcastle --limit 100 --fields index,title,state,labels,body,url -o json` (raw JSON, no jq pipe), VIEW `tea issues <ID> --comments -o json`, CLOSE `tea comments add <ID> "Completed by Sandcastle" && tea issues close <ID>`; `<ID>` = issue index; bare commands relying on 04's auto-detection; `Sandcastle` label kept (07 extends `--create-label`/strip to the `--labels` spelling, 08 documents label creation).
+- [Decide: TEA_TOOLS Dockerfile snippet and tea version pinning policy](tickets/06-tea-tools-dockerfile-pin.md) — Locked: pin `TEA_VERSION = "0.16.0"` const + overridable `ARG TEA_VERSION` (beads pattern); `TEA_TOOLS` is the research §5 block verbatim — single RUN, `tea-…-linux-${ARCH}.xz` from gitea.com releases, `checksums.txt` grep + `sha256sum -c`, install to `/usr/local/bin/tea`, `tea --version` sanity; static binary so no runtime deps; **no drift warning** (tea keeps no shared local state, unlike bd).
 
 ## Not yet specified
 
 <!-- in-scope fog; graduates as the frontier advances -->
 
 - Empirical end-to-end run of the locked commands and env vars against a real Codeberg repo needs a token/test repo the user provisions (09).
-- Whether a host-tea vs image-tea drift warning is ever needed (expected: no — tea keeps no shared local state; the beads warning exists because bd owns the database) — decided in 06.
 
 ## Out of scope
 
